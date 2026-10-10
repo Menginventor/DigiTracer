@@ -68,6 +68,7 @@ class DigiTracerApp {
     // CAD Geometry & Dimensions
     this.dimensions = [];
     this.dimPoints = [];
+    this.dimMeasureTargets = []; // Measurement target 1 picked, awaiting target 2
     this.activeDimPlacement = null; // Interactive 3rd click dimension placement
     this.selectedDimensionId = null;
     this.draggingDimension = null; // Draggable dimension offset
@@ -808,6 +809,7 @@ class DigiTracerApp {
       } else if (e.key === 'Escape') {
         this.activeMode = 'pan';
         this.dimPoints = [];
+        this.dimMeasureTargets = [];
         this.activeDimPlacement = null;
         this.selectedDimensionId = null;
         this.tempCadShape = null;
@@ -882,21 +884,29 @@ class DigiTracerApp {
 
     // 5. CAD Dimension Tool (Click 1 -> Click 2 -> Click 3 for Perpendicular Offset)
     if (e.button === 0 && (this.activeMode === 'cadDim' || this.activeMode === 'cadDimCC')) {
-      // If currently in 3rd-click placement phase: finalize dimension!
+      // 3rd-click: finalize dimension placement
       if (this.activeDimPlacement) {
         this.saveState('Place Dimension');
         const finalDim = {
           id: Date.now(),
+          type: this.activeDimPlacement.type || 'linear',
           p1: this.activeDimPlacement.p1,
           p2: this.activeDimPlacement.p2,
           offset: this.activeDimPlacement.offset || 0,
           mmDist: this.activeDimPlacement.mmDist,
           isCC: this.activeDimPlacement.isCC,
-          text: this.activeDimPlacement.text
+          text: this.activeDimPlacement.text,
+          // Angle dimensions
+          vertex: this.activeDimPlacement.vertex,
+          angle1: this.activeDimPlacement.angle1,
+          angle2: this.activeDimPlacement.angle2,
+          radius: this.activeDimPlacement.radius,
+          angleDeg: this.activeDimPlacement.angleDeg
         };
         this.dimensions.push(finalDim);
         this.selectedDimensionId = finalDim.id;
         this.activeDimPlacement = null;
+        this.dimMeasureTargets = [];
         this.dimPoints = [];
         this.updateDimensionsUI();
         this.render();
@@ -904,37 +914,47 @@ class DigiTracerApp {
         return;
       }
 
-      const snap = this.activeSnapPoint || this.findSnapPoint(worldPt);
-      const effectivePt = snap ? { x: snap.x, y: snap.y, isCenter: snap.type === 'center', snapType: snap.type } : worldPt;
-
-      if (this.dimPoints.length === 0) {
-        this.dimPoints.push(effectivePt);
-        const label = snap ? `${snap.label} selected.` : 'Point 1 placed.';
-        this.showToast(`${label} Click Point 2 (snap to endpoint/midpoint/center).`);
+      // 1st click: pick target 1
+      if (!this.dimMeasureTargets || this.dimMeasureTargets.length === 0) {
+        const target = this.findCadMeasurementTarget(worldPt);
+        if (!target) {
+          this.showToast('Click a CAD point or line to measure — not empty space', true);
+          return;
+        }
+        this.dimMeasureTargets = [target];
+        // For point targets, also store in dimPoints for the preview line
+        if (target.type === 'point') {
+          this.dimPoints = [{ x: target.x, y: target.y, isCenter: !!target.isCenter }];
+        } else {
+          this.dimPoints = [];
+        }
+        const label = target.type === 'point' ? target.label : target.label;
+        this.showToast(`Target 1: ${label}. Now click Target 2 (point or line).`);
         this.render();
-      } else {
-        const p1 = this.dimPoints[0];
-        const p2 = effectivePt;
-        const distPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        const ppm = this.calibration.ppm || 1;
-        const mmDist = distPx / ppm;
-        const isCC = (p1.isCenter && p2.isCenter) || this.activeMode === 'cadDimCC';
-        const prefix = isCC ? 'C-C: ' : '';
-        const dimText = `${prefix}${mmDist.toFixed(1)} ${this.calibration.unit}`;
-
-        // Enter 3rd click placement phase!
-        this.activeDimPlacement = {
-          p1,
-          p2,
-          offset: 0,
-          mmDist,
-          isCC,
-          text: dimText
-        };
-        this.dimPoints = []; // Hide first measurement preview line from mouse
-        this.showToast(`Points set. Move mouse perpendicular & click 3rd time to place dimension.`);
-        this.render();
+        return;
       }
+
+      // 2nd click: pick target 2, compute measurement
+      const target2 = this.findCadMeasurementTarget(worldPt);
+      if (!target2) {
+        this.showToast('Click a CAD point or line — not empty space', true);
+        return;
+      }
+      const target1 = this.dimMeasureTargets[0];
+      const placement = this.computeMeasurementBetweenTargets(target1, target2);
+      if (!placement) {
+        this.showToast('Cannot measure between these targets', true);
+        return;
+      }
+      this.activeDimPlacement = placement;
+      this.dimMeasureTargets = [];
+      this.dimPoints = [];
+      if (placement.type === 'angle') {
+        this.showToast(`Angle: ${placement.text}. Move mouse to adjust arc radius & click to place.`);
+      } else {
+        this.showToast(`${placement.text} — Move mouse perpendicular & click 3rd time to place.`);
+      }
+      this.render();
       return;
     }
 
@@ -1057,18 +1077,29 @@ class DigiTracerApp {
 
     // Live 3rd click dimension placement preview
     if (this.activeDimPlacement) {
-      const p1 = this.activeDimPlacement.p1;
-      const p2 = this.activeDimPlacement.p2;
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > 0.001) {
-        const nx = -dy / dist;
-        const ny = dx / dist;
-        this.activeDimPlacement.offset = (worldPt.x - p1.x) * nx + (worldPt.y - p1.y) * ny;
-        this.render();
-        return;
+      if (this.activeDimPlacement.type === 'angle') {
+        // Adjust arc radius based on distance from vertex
+        const v = this.activeDimPlacement.vertex;
+        if (v) {
+          const newRadius = Math.hypot(worldPt.x - v.x, worldPt.y - v.y);
+          if (newRadius > 5 / this.view.scale) {
+            this.activeDimPlacement.radius = newRadius;
+          }
+        }
+      } else {
+        const p1 = this.activeDimPlacement.p1;
+        const p2 = this.activeDimPlacement.p2;
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 0.001) {
+          const nx = -dy / dist;
+          const ny = dx / dist;
+          this.activeDimPlacement.offset = (worldPt.x - p1.x) * nx + (worldPt.y - p1.y) * ny;
+        }
       }
+      this.render();
+      return;
     }
 
     // Live CAD Line Preview
@@ -1809,15 +1840,19 @@ class DigiTracerApp {
   startCircleCenterToCenterMode() {
     this.activeMode = 'cadDimCC';
     this.dimPoints = [];
+    this.dimMeasureTargets = [];
+    this.activeDimPlacement = null;
     this.tempCadShape = null;
     this.updateToolbarActive();
-    this.showToast('Center-to-Center Mode: Click first circle center, then second circle center');
+    this.showToast('Center-to-Center Mode: Click first circle/slot center, then second.');
   }
 
   startCircleCenterMeasure(circle) {
     if (!circle) return;
     this.activeMode = 'cadDim';
     this.dimPoints = [{ x: circle.cx, y: circle.cy, isCenter: true }];
+    this.dimMeasureTargets = [{ type: 'point', x: circle.cx, y: circle.cy, isCenter: true, label: 'Circle Center' }];
+    this.activeDimPlacement = null;
     this.updateToolbarActive();
     this.render();
     this.showToast('Circle 1 Center selected. Click second circle center (or point)!');
@@ -2303,26 +2338,28 @@ class DigiTracerApp {
         this.ctx.fillStyle = isSelected ? '#ea580c' : '#1b6acb';
         this.ctx.fill();
 
-        // Diameter Dimension Label (e.g. ⌀13.1 mm) with BLACK text
-        const diaMM = (path.diameter / ppm).toFixed(1);
-        const dimStr = `⌀${diaMM} ${this.calibration.unit}`;
-        const fontSize = Math.max(10, 12 / this.view.scale);
-        this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
-        const textMetrics = this.ctx.measureText(dimStr);
-        const textW = textMetrics.width;
-        const tx = path.cx + path.radius + 6 / this.view.scale;
-        const ty = path.cy;
+        // Diameter Dimension Label (e.g. ⌀13.1 mm) — only when selected
+        if (isSelected) {
+          const diaMM = (path.diameter / ppm).toFixed(1);
+          const dimStr = `⌀${diaMM} ${this.calibration.unit}`;
+          const fontSize = 12 / this.view.scale; // zoom-invariant: always 12px on screen
+          this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
+          const textMetrics = this.ctx.measureText(dimStr);
+          const textW = textMetrics.width;
+          const tx = path.cx + path.radius + 6 / this.view.scale;
+          const ty = path.cy;
 
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-        this.ctx.strokeStyle = isSelected ? '#ea580c' : '#cbd5e1';
-        this.ctx.lineWidth = 1 / this.view.scale;
-        this.ctx.fillRect(tx - 3 / this.view.scale, ty - fontSize / 2 - 2 / this.view.scale, textW + 6 / this.view.scale, fontSize + 4 / this.view.scale);
-        this.ctx.strokeRect(tx - 3 / this.view.scale, ty - fontSize / 2 - 2 / this.view.scale, textW + 6 / this.view.scale, fontSize + 4 / this.view.scale);
+          this.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+          this.ctx.strokeStyle = '#ea580c';
+          this.ctx.lineWidth = 1 / this.view.scale;
+          this.ctx.fillRect(tx - 3 / this.view.scale, ty - fontSize / 2 - 2 / this.view.scale, textW + 6 / this.view.scale, fontSize + 4 / this.view.scale);
+          this.ctx.strokeRect(tx - 3 / this.view.scale, ty - fontSize / 2 - 2 / this.view.scale, textW + 6 / this.view.scale, fontSize + 4 / this.view.scale);
 
-        this.ctx.fillStyle = '#0f172a'; // TEXT IN DEEP SLATE
-        this.ctx.textBaseline = 'middle';
-        this.ctx.fillText(dimStr, tx, ty);
-        this.ctx.textBaseline = 'alphabetic';
+          this.ctx.fillStyle = '#0f172a'; // TEXT IN DEEP SLATE
+          this.ctx.textBaseline = 'middle';
+          this.ctx.fillText(dimStr, tx, ty);
+          this.ctx.textBaseline = 'alphabetic';
+        }
 
         return;
       }
@@ -2371,29 +2408,31 @@ class DigiTracerApp {
           this.ctx.fill();
         });
 
-        // Slot Dimension Badge (e.g. Slot: 45.2 × 12.0 mm) with BLACK text
-        const slotL = path.slotLength !== undefined ? path.slotLength : (path.lengthVal !== undefined ? path.lengthVal : path.length);
-        const slotW = path.slotWidth !== undefined ? path.slotWidth : path.width;
-        const lenMM = (slotL / ppm).toFixed(1);
-        const wMM = (slotW / ppm).toFixed(1);
-        const slotStr = `Slot: ${lenMM} × ${wMM} ${this.calibration.unit}`;
-        const fontSize = Math.max(10, 11 / this.view.scale);
-        this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
-        const textMetrics = this.ctx.measureText(slotStr);
-        const textW = textMetrics.width;
+        // Slot Dimension Badge (e.g. Slot: 45.2 × 12.0 mm) — only when selected
+        if (isSelected) {
+          const slotL = path.slotLength !== undefined ? path.slotLength : (path.lengthVal !== undefined ? path.lengthVal : path.length);
+          const slotW = path.slotWidth !== undefined ? path.slotWidth : path.width;
+          const lenMM = (slotL / ppm).toFixed(1);
+          const wMM = (slotW / ppm).toFixed(1);
+          const slotStr = `Slot: ${lenMM} × ${wMM} ${this.calibration.unit}`;
+          const fontSize = 12 / this.view.scale; // zoom-invariant
+          this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
+          const textMetrics = this.ctx.measureText(slotStr);
+          const textW = textMetrics.width;
 
-        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-        this.ctx.strokeStyle = isSelected ? '#ea580c' : '#cbd5e1';
-        this.ctx.lineWidth = 1 / this.view.scale;
-        this.ctx.fillRect(path.cx - textW / 2 - 4 / this.view.scale, path.cy - fontSize / 2 - 3 / this.view.scale, textW + 8 / this.view.scale, fontSize + 6 / this.view.scale);
-        this.ctx.strokeRect(path.cx - textW / 2 - 4 / this.view.scale, path.cy - fontSize / 2 - 3 / this.view.scale, textW + 8 / this.view.scale, fontSize + 6 / this.view.scale);
+          this.ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+          this.ctx.strokeStyle = '#ea580c';
+          this.ctx.lineWidth = 1 / this.view.scale;
+          this.ctx.fillRect(path.cx - textW / 2 - 4 / this.view.scale, path.cy - fontSize / 2 - 3 / this.view.scale, textW + 8 / this.view.scale, fontSize + 6 / this.view.scale);
+          this.ctx.strokeRect(path.cx - textW / 2 - 4 / this.view.scale, path.cy - fontSize / 2 - 3 / this.view.scale, textW + 8 / this.view.scale, fontSize + 6 / this.view.scale);
 
-        this.ctx.fillStyle = '#0f172a'; // TEXT IN DEEP SLATE
-        this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'middle';
-        this.ctx.fillText(slotStr, path.cx, path.cy);
-        this.ctx.textAlign = 'start';
-        this.ctx.textBaseline = 'alphabetic';
+          this.ctx.fillStyle = '#0f172a'; // TEXT IN DEEP SLATE
+          this.ctx.textAlign = 'center';
+          this.ctx.textBaseline = 'middle';
+          this.ctx.fillText(slotStr, path.cx, path.cy);
+          this.ctx.textAlign = 'start';
+          this.ctx.textBaseline = 'alphabetic';
+        }
 
         return;
       }
@@ -2410,12 +2449,12 @@ class DigiTracerApp {
         this.ctx.shadowBlur = 0;
         this.ctx.stroke();
 
-        // Line Length badge when selected with BLACK text
+        // Line Length badge — only when selected
         if (isSelected) {
           const lineLenMM = (Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y) / ppm).toFixed(1);
           const constrSuffix = path.constraint && path.constraint.symbol ? ` [${path.constraint.symbol}]` : '';
           const lineStr = `Line: ${lineLenMM} ${this.calibration.unit}${constrSuffix}`;
-          const fontSize = Math.max(10, 11 / this.view.scale);
+          const fontSize = 12 / this.view.scale; // zoom-invariant
           this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
           const midX = (path[0].x + path[1].x) / 2;
           const midY = (path[0].y + path[1].y) / 2;
@@ -2434,7 +2473,7 @@ class DigiTracerApp {
           this.ctx.textAlign = 'start';
           this.ctx.textBaseline = 'alphabetic';
         } else if (path.constraint && path.constraint.symbol) {
-          // Render constraint relation badge even when line is not selected
+          // Constraint badge shown even without selection
           const midX = (path[0].x + path[1].x) / 2;
           const midY = (path[0].y + path[1].y) / 2;
           const badgeR = 8 / this.view.scale;
@@ -2447,7 +2486,7 @@ class DigiTracerApp {
           this.ctx.fill();
           this.ctx.stroke();
           this.ctx.fillStyle = '#1b6acb';
-          this.ctx.font = `bold ${Math.max(10, 11 / this.view.scale)}px sans-serif`;
+          this.ctx.font = `bold ${11 / this.view.scale}px sans-serif`; // zoom-invariant 11px
           this.ctx.textAlign = 'center';
           this.ctx.textBaseline = 'middle';
           this.ctx.fillText(path.constraint.symbol, midX, midY);
@@ -2739,6 +2778,12 @@ class DigiTracerApp {
   }
 
   drawSingleDimension(dim, isPreview = false, isSelected = false) {
+    // Angle dimension — arc-based rendering
+    if (dim.type === 'angle') {
+      this.drawAngularDimension(dim, isPreview, isSelected);
+      return;
+    }
+
     const { p1, p2, text } = dim;
     const offset = dim.offset || 0;
     const dx = p2.x - p1.x;
@@ -2758,7 +2803,7 @@ class DigiTracerApp {
 
     const lineWidth = (isSelected ? 2 : 1.5) / this.view.scale;
     const slash = 5 / this.view.scale;
-    const fontSize = Math.max(10, 11 / this.view.scale);
+    const fontSize = 11 / this.view.scale; // zoom-invariant: always 11px on screen
     const strokeColor = isSelected ? '#ea580c' : (isPreview ? '#0284c7' : '#1b6acb');
 
     this.ctx.save();
@@ -2798,7 +2843,7 @@ class DigiTracerApp {
     this.ctx.stroke();
     this.ctx.setLineDash([]);
 
-    // Measurement value badge
+    // Measurement value badge — zoom-invariant font
     this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
     const textMetrics = this.ctx.measureText(text);
     const textW = textMetrics.width;
@@ -2815,6 +2860,62 @@ class DigiTracerApp {
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
     this.ctx.fillText(text, midX, midY);
+    this.ctx.restore();
+  }
+
+  drawAngularDimension(dim, isPreview = false, isSelected = false) {
+    const { vertex, angle1, angle2, radius, text } = dim;
+    if (!vertex || radius < 1) return;
+    const strokeColor = isSelected ? '#ea580c' : (isPreview ? '#0284c7' : '#1b6acb');
+    const lineWidth = (isSelected ? 2 : 1.5) / this.view.scale;
+    const fontSize = 11 / this.view.scale;
+
+    this.ctx.save();
+    this.ctx.strokeStyle = strokeColor;
+    this.ctx.lineWidth = lineWidth;
+
+    // Draw arc
+    let a1 = angle1, a2 = angle2;
+    // Normalize angles so arc sweeps the smaller angle
+    let sweep = a2 - a1;
+    while (sweep < -Math.PI) sweep += 2 * Math.PI;
+    while (sweep > Math.PI) sweep -= 2 * Math.PI;
+    if (isPreview) this.ctx.setLineDash([4 / this.view.scale, 2 / this.view.scale]);
+    this.ctx.beginPath();
+    this.ctx.arc(vertex.x, vertex.y, radius, a1, a1 + sweep, sweep < 0);
+    this.ctx.stroke();
+    this.ctx.setLineDash([]);
+
+    // Extension rays from vertex to arc endpoints
+    const ex1 = { x: vertex.x + (radius + 8 / this.view.scale) * Math.cos(a1), y: vertex.y + (radius + 8 / this.view.scale) * Math.sin(a1) };
+    const ex2 = { x: vertex.x + (radius + 8 / this.view.scale) * Math.cos(a2), y: vertex.y + (radius + 8 / this.view.scale) * Math.sin(a2) };
+    this.ctx.beginPath();
+    this.ctx.moveTo(vertex.x, vertex.y);
+    this.ctx.lineTo(ex1.x, ex1.y);
+    this.ctx.moveTo(vertex.x, vertex.y);
+    this.ctx.lineTo(ex2.x, ex2.y);
+    this.ctx.stroke();
+
+    // Label at arc midpoint
+    const midAngle = a1 + sweep / 2;
+    const lx = vertex.x + radius * Math.cos(midAngle);
+    const ly = vertex.y + radius * Math.sin(midAngle);
+
+    this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
+    const textW = this.ctx.measureText(text).width;
+    const padX = 6 / this.view.scale;
+    const padY = 3 / this.view.scale;
+
+    this.ctx.fillStyle = isSelected ? 'rgba(255, 247, 237, 0.98)' : 'rgba(255, 255, 255, 0.96)';
+    this.ctx.strokeStyle = strokeColor;
+    this.ctx.lineWidth = (isSelected ? 1.5 : 1) / this.view.scale;
+    this.ctx.fillRect(lx - textW / 2 - padX, ly - fontSize / 2 - padY, textW + padX * 2, fontSize + padY * 2);
+    this.ctx.strokeRect(lx - textW / 2 - padX, ly - fontSize / 2 - padY, textW + padX * 2, fontSize + padY * 2);
+
+    this.ctx.fillStyle = isSelected ? '#ea580c' : '#0f172a';
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    this.ctx.fillText(text, lx, ly);
     this.ctx.restore();
   }
 
@@ -2962,6 +3063,162 @@ class DigiTracerApp {
   }
 
   /* ----------------------------------------------------
+     CAD Measurement Target Detection
+     ---------------------------------------------------- */
+
+  /**
+   * Returns { type: 'point', x, y, label, snapType } or { type: 'line', a, b, path, label }
+   * Returns null if nothing valid is at worldPt.
+   */
+  findCadMeasurementTarget(worldPt) {
+    // 1. Prefer a snap point (endpoint, midpoint, center)
+    const snap = this.activeSnapPoint || this.findSnapPoint(worldPt, 18);
+    if (snap) {
+      return { type: 'point', x: snap.x, y: snap.y, label: snap.label, snapType: snap.type, isCenter: snap.type === 'center' };
+    }
+    // 2. Fallback: line proximity
+    return this.findLineTargetAtPoint(worldPt);
+  }
+
+  /** Returns { type: 'line', a, b, path, label } or null */
+  findLineTargetAtPoint(worldPt, snapRadiusPx = 14) {
+    const threshold = snapRadiusPx / this.view.scale;
+    let bestDist = threshold;
+    let bestResult = null;
+
+    this.vectorPaths.forEach((path) => {
+      if (!path) return;
+
+      // CAD Lines
+      if (path.isLine && path.length >= 2) {
+        const d = this.pointToSegmentDistance(worldPt, path[0], path[1]);
+        if (d < bestDist) {
+          bestDist = d;
+          bestResult = { type: 'line', a: path[0], b: path[1], path, label: 'Line' };
+        }
+        return;
+      }
+
+      // Slot centerline as a line target
+      if (path.isSlot && path.c1 && path.c2) {
+        const d = this.pointToSegmentDistance(worldPt, path.c1, path.c2);
+        if (d < bestDist) {
+          bestDist = d;
+          bestResult = { type: 'line', a: path.c1, b: path.c2, path, label: 'Slot Centerline' };
+        }
+        return;
+      }
+
+      // General polygon edges
+      if (!path.isCircle && path.length >= 2) {
+        for (let i = 0; i < path.length; i++) {
+          const next = path[(i + 1) % path.length];
+          const d = this.pointToSegmentDistance(worldPt, path[i], next);
+          if (d < bestDist) {
+            bestDist = d;
+            bestResult = { type: 'line', a: path[i], b: next, path, label: 'Contour Edge' };
+          }
+        }
+      }
+    });
+
+    return bestResult;
+  }
+
+  /**
+   * Compute what to measure between two targets.
+   * Returns a dim-like placement object.
+   */
+  computeMeasurementBetweenTargets(t1, t2) {
+    const ppm = this.calibration.ppm || 1;
+
+    // Point ↔ Point
+    if (t1.type === 'point' && t2.type === 'point') {
+      const p1 = { x: t1.x, y: t1.y, isCenter: !!t1.isCenter };
+      const p2 = { x: t2.x, y: t2.y, isCenter: !!t2.isCenter };
+      const distPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const mmDist = distPx / ppm;
+      const isCC = !!(p1.isCenter && p2.isCenter);
+      const prefix = isCC ? 'C-C: ' : '';
+      return { type: 'linear', p1, p2, offset: 0, mmDist, isCC, text: `${prefix}${mmDist.toFixed(1)} ${this.calibration.unit}` };
+    }
+
+    // Point ↔ Line or Line ↔ Point (perpendicular distance)
+    let pointTarget = null, lineTarget = null;
+    if (t1.type === 'point' && t2.type === 'line') { pointTarget = t1; lineTarget = t2; }
+    else if (t1.type === 'line' && t2.type === 'point') { pointTarget = t2; lineTarget = t1; }
+
+    if (pointTarget && lineTarget) {
+      const P = { x: pointTarget.x, y: pointTarget.y };
+      const A = lineTarget.a, B = lineTarget.b;
+      const dx = B.x - A.x, dy = B.y - A.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 0.001) return null;
+      const ux = dx / len, uy = dy / len;
+      const t = (P.x - A.x) * ux + (P.y - A.y) * uy;
+      const proj = { x: A.x + t * ux, y: A.y + t * uy };
+      const distPx = Math.hypot(P.x - proj.x, P.y - proj.y);
+      const mmDist = distPx / ppm;
+      const p1 = { x: P.x, y: P.y, isCenter: !!pointTarget.isCenter };
+      const p2 = { x: proj.x, y: proj.y, isCenter: false };
+      return { type: 'linear', p1, p2, offset: 0, mmDist, isCC: false, text: `⊥ ${mmDist.toFixed(1)} ${this.calibration.unit}` };
+    }
+
+    // Line ↔ Line
+    if (t1.type === 'line' && t2.type === 'line') {
+      const v1 = { x: t1.b.x - t1.a.x, y: t1.b.y - t1.a.y };
+      const v2 = { x: t2.b.x - t2.a.x, y: t2.b.y - t2.a.y };
+      const len1 = Math.hypot(v1.x, v1.y), len2 = Math.hypot(v2.x, v2.y);
+      if (len1 < 0.001 || len2 < 0.001) return null;
+      const u1 = { x: v1.x / len1, y: v1.y / len1 };
+      const u2 = { x: v2.x / len2, y: v2.y / len2 };
+      const dotAbs = Math.abs(u1.x * u2.x + u1.y * u2.y);
+      const angleDeg = Math.acos(Math.min(1, dotAbs)) * 180 / Math.PI;
+
+      // If nearly parallel (< 2°), measure perpendicular distance
+      if (angleDeg < 2) {
+        // Project midpoint of line1 onto line2
+        const M1 = { x: (t1.a.x + t1.b.x) / 2, y: (t1.a.y + t1.b.y) / 2 };
+        const dx2 = t2.b.x - t2.a.x, dy2 = t2.b.y - t2.a.y;
+        const l2 = Math.hypot(dx2, dy2);
+        const ux2 = dx2 / l2, uy2 = dy2 / l2;
+        const tc = (M1.x - t2.a.x) * ux2 + (M1.y - t2.a.y) * uy2;
+        const M2 = { x: t2.a.x + tc * ux2, y: t2.a.y + tc * uy2 };
+        const distPx = Math.hypot(M1.x - M2.x, M1.y - M2.y);
+        const mmDist = distPx / ppm;
+        return { type: 'linear', p1: { x: M1.x, y: M1.y, isCenter: false }, p2: { x: M2.x, y: M2.y, isCenter: false }, offset: 0, mmDist, isCC: false, text: `// ${mmDist.toFixed(1)} ${this.calibration.unit}` };
+      }
+
+      // Non-parallel: compute intersection vertex and arc angles
+      const denom = (t1.a.x - t1.b.x) * (t2.a.y - t2.b.y) - (t1.a.y - t1.b.y) * (t2.a.x - t2.b.x);
+      let vertex;
+      if (Math.abs(denom) < 0.001) {
+        // Shouldn't happen since we already checked parallel, but fallback
+        vertex = { x: (t1.a.x + t1.b.x) / 2, y: (t1.a.y + t1.b.y) / 2 };
+      } else {
+        const tParam = ((t1.a.x - t2.a.x) * (t2.a.y - t2.b.y) - (t1.a.y - t2.a.y) * (t2.a.x - t2.b.x)) / denom;
+        vertex = { x: t1.a.x + tParam * (t1.b.x - t1.a.x), y: t1.a.y + tParam * (t1.b.y - t1.a.y) };
+      }
+      const M1 = { x: (t1.a.x + t1.b.x) / 2, y: (t1.a.y + t1.b.y) / 2 };
+      const M2 = { x: (t2.a.x + t2.b.x) / 2, y: (t2.a.y + t2.b.y) / 2 };
+      const a1 = Math.atan2(M1.y - vertex.y, M1.x - vertex.x);
+      const a2 = Math.atan2(M2.y - vertex.y, M2.x - vertex.x);
+      const defaultRadius = Math.min(Math.hypot(M1.x - vertex.x, M1.y - vertex.y), Math.hypot(M2.x - vertex.x, M2.y - vertex.y)) * 0.5;
+      return {
+        type: 'angle',
+        vertex,
+        angle1: a1,
+        angle2: a2,
+        radius: Math.max(20 / this.view.scale, defaultRadius),
+        angleDeg,
+        text: `∠ ${angleDeg.toFixed(1)}°`
+      };
+    }
+
+    return null;
+  }
+
+  /* ----------------------------------------------------
      CAD Snapping System (Endpoints, Midpoints, Centers)
      ---------------------------------------------------- */
   findSnapPoint(worldPt, snapRadiusPx = 18) {
@@ -3094,6 +3351,28 @@ class DigiTracerApp {
     const threshold = hitThresholdPx / this.view.scale;
     for (let i = this.dimensions.length - 1; i >= 0; i--) {
       const dim = this.dimensions[i];
+
+      // Angle dimension hit test
+      if (dim.type === 'angle') {
+        const { vertex, angle1, angle2, radius } = dim;
+        if (!vertex) continue;
+        let sweep = angle2 - angle1;
+        while (sweep < -Math.PI) sweep += 2 * Math.PI;
+        while (sweep > Math.PI) sweep -= 2 * Math.PI;
+        const midAngle = angle1 + sweep / 2;
+        const lx = vertex.x + radius * Math.cos(midAngle);
+        const ly = vertex.y + radius * Math.sin(midAngle);
+        if (Math.hypot(worldPt.x - lx, worldPt.y - ly) <= threshold * 2) {
+          return dim;
+        }
+        const distToCenter = Math.hypot(worldPt.x - vertex.x, worldPt.y - vertex.y);
+        if (Math.abs(distToCenter - radius) <= threshold) {
+          return dim;
+        }
+        continue;
+      }
+
+      if (!dim.p1 || !dim.p2) continue;
       const p1 = dim.p1;
       const p2 = dim.p2;
       const offset = dim.offset || 0;
@@ -3296,11 +3575,19 @@ class DigiTracerApp {
      ---------------------------------------------------- */
   saveState(actionName = 'Edit') {
     const pathsClone = this.vectorPaths.map(p => this.clonePath(p));
-    const dimsClone = this.dimensions.map(dim => ({
-      ...dim,
-      p1: { x: dim.p1.x, y: dim.p1.y, isCenter: dim.p1.isCenter },
-      p2: { x: dim.p2.x, y: dim.p2.y, isCenter: dim.p2.isCenter }
-    }));
+    const dimsClone = this.dimensions.map(dim => {
+      if (dim.type === 'angle') {
+        return {
+          ...dim,
+          vertex: dim.vertex ? { x: dim.vertex.x, y: dim.vertex.y } : null
+        };
+      }
+      return {
+        ...dim,
+        p1: dim.p1 ? { x: dim.p1.x, y: dim.p1.y, isCenter: dim.p1.isCenter } : null,
+        p2: dim.p2 ? { x: dim.p2.x, y: dim.p2.y, isCenter: dim.p2.isCenter } : null
+      };
+    });
 
     const state = {
       actionName,
@@ -3329,7 +3616,9 @@ class DigiTracerApp {
     const currentState = {
       actionName: 'Current',
       vectorPaths: this.vectorPaths.map(p => this.clonePath(p)),
-      dimensions: this.dimensions.map(d => ({ ...d, p1: { ...d.p1 }, p2: { ...d.p2 } })),
+      dimensions: this.dimensions.map(d => d.type === 'angle'
+        ? { ...d, vertex: d.vertex ? { ...d.vertex } : null }
+        : { ...d, p1: d.p1 ? { ...d.p1 } : null, p2: d.p2 ? { ...d.p2 } : null }),
       calibration: { ...this.calibration },
       selectedContourIndex: this.selectedContourIndex,
       selectedContourIndices: Array.from(this.selectedContourIndices || []),
@@ -3352,7 +3641,9 @@ class DigiTracerApp {
     const currentState = {
       actionName: 'Current',
       vectorPaths: this.vectorPaths.map(p => this.clonePath(p)),
-      dimensions: this.dimensions.map(d => ({ ...d, p1: { ...d.p1 }, p2: { ...d.p2 } })),
+      dimensions: this.dimensions.map(d => d.type === 'angle'
+        ? { ...d, vertex: d.vertex ? { ...d.vertex } : null }
+        : { ...d, p1: d.p1 ? { ...d.p1 } : null, p2: d.p2 ? { ...d.p2 } : null }),
       calibration: { ...this.calibration },
       selectedContourIndex: this.selectedContourIndex,
       selectedContourIndices: Array.from(this.selectedContourIndices || []),
@@ -3369,7 +3660,9 @@ class DigiTracerApp {
   restoreState(state) {
     if (!state) return;
     this.vectorPaths = state.vectorPaths.map(p => this.clonePath(p));
-    this.dimensions = state.dimensions.map(d => ({ ...d, p1: { ...d.p1 }, p2: { ...d.p2 } }));
+    this.dimensions = state.dimensions.map(d => d.type === 'angle'
+      ? { ...d, vertex: d.vertex ? { ...d.vertex } : null }
+      : { ...d, p1: d.p1 ? { ...d.p1 } : null, p2: d.p2 ? { ...d.p2 } : null });
     this.selectedContourIndex = state.selectedContourIndex;
     this.selectedContourIndices = new Set(state.selectedContourIndices || []);
     this.selectedDimensionId = state.selectedDimensionId;
@@ -3471,13 +3764,26 @@ class DigiTracerApp {
 
   getMillimeterDimensions() {
     const ppm = this.calibration.ppm || 1.0;
-    return this.dimensions.map(dim => ({
-      p1: { x: dim.p1.x / ppm, y: dim.p1.y / ppm },
-      p2: { x: dim.p2.x / ppm, y: dim.p2.y / ppm },
-      offset: (dim.offset || 0) / ppm,
-      mmDist: dim.mmDist,
-      text: dim.text
-    }));
+    return this.dimensions.map(dim => {
+      if (dim.type === 'angle') {
+        return {
+          type: 'angle',
+          vertex: dim.vertex ? { x: dim.vertex.x / ppm, y: dim.vertex.y / ppm } : null,
+          angle1: dim.angle1,
+          angle2: dim.angle2,
+          radius: (dim.radius || 0) / ppm,
+          angleDeg: dim.angleDeg,
+          text: dim.text
+        };
+      }
+      return {
+        p1: dim.p1 ? { x: dim.p1.x / ppm, y: dim.p1.y / ppm } : null,
+        p2: dim.p2 ? { x: dim.p2.x / ppm, y: dim.p2.y / ppm } : null,
+        offset: (dim.offset || 0) / ppm,
+        mmDist: dim.mmDist,
+        text: dim.text
+      };
+    });
   }
 
   exportDXF() {
