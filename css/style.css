@@ -898,3 +898,40 @@ input[type="range"]::-webkit-slider-thumb:hover {
   opacity: 1;
   transform: translateY(0);
 }
+
+/* Dimension & CAD Entity List */
+.dim-list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dim-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-tertiary);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  border: 1px solid var(--border-color);
+}
+
+.dim-item-title {
+  color: var(--text-muted);
+}
+
+.dim-item-val {
+  color: var(--cad-cyan);
+  font-weight: 600;
+}
+
+.dim-item-del {
+  background: transparent;
+  border: none;
+  color: var(--danger-color);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 0.8rem;
+}

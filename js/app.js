@@ -28,9 +28,11 @@ class DigiTracerApp {
       startY: 0
     };
     
-    // Tool mode: 'pan', 'calibrate', 'draw'
+    // Tool mode: 'pan', 'select', 'pixelEraser', 'pixelBrush', 'cadLine', 'cadRect', 'cadCircle', 'cadDim', 'calibrate', 'draw'
     this.activeMode = 'pan';
-    
+    this.brushSize = 12;
+    this.isPainting = false;
+
     // Calibration state: default to 300 DPI for standard flatbed scan
     this.calibration = {
       points: [],
@@ -62,6 +64,12 @@ class DigiTracerApp {
     this.minCircularity = 0.60;
     this.selectedContourIndex = -1;
     
+    // CAD Geometry & Dimensions
+    this.dimensions = [];
+    this.dimPoints = [];
+    this.tempCadShape = null;
+    this.draggedVertex = null;
+
     // Manual path drawing
     this.manualPath = [];
     
@@ -182,8 +190,11 @@ class DigiTracerApp {
       document.getElementById('valThreshold').textContent = '205';
       document.getElementById('valContrast').textContent = '1.2';
       document.getElementById('valBrightness').textContent = '0';
+      if (this.sourceImage) {
+        this.imgCtx.drawImage(this.sourceImage, 0, 0);
+      }
       this.runAutoTrace();
-      this.showToast('Image filters reset');
+      this.showToast('Image filters reset & pixel edits reloaded');
     });
 
     // Scanner DPI Calibration Controls
@@ -345,9 +356,97 @@ class DigiTracerApp {
       }
     });
 
-    // Toolbar Controls
+    // Pixel Editor Controls (Scan Cleanup & Mask Pen)
+    const btnToolEraser = document.getElementById('btnToolEraser');
+    const toolPixelEraser = document.getElementById('toolPixelEraser');
+    const btnToolBrush = document.getElementById('btnToolBrush');
+    const toolPixelBrush = document.getElementById('toolPixelBrush');
+    const sliderBrushSize = document.getElementById('sliderBrushSize');
+    const btnClearDust = document.getElementById('btnClearDust');
+    const btnTraceAfterEdit = document.getElementById('btnTraceAfterEdit');
+
+    const setPixelMode = (mode) => {
+      this.activeMode = this.activeMode === mode ? 'pan' : mode;
+      this.updateToolbarActive();
+      const modeName = this.activeMode === 'pixelEraser' ? 'Eraser' : (this.activeMode === 'pixelBrush' ? 'Ink Pen' : 'Pan');
+      this.showToast(`Tool: ${modeName}`);
+    };
+
+    if (btnToolEraser) btnToolEraser.addEventListener('click', () => setPixelMode('pixelEraser'));
+    if (toolPixelEraser) toolPixelEraser.addEventListener('click', () => setPixelMode('pixelEraser'));
+    if (btnToolBrush) btnToolBrush.addEventListener('click', () => setPixelMode('pixelBrush'));
+    if (toolPixelBrush) toolPixelBrush.addEventListener('click', () => setPixelMode('pixelBrush'));
+
+    if (sliderBrushSize) {
+      sliderBrushSize.addEventListener('input', (e) => {
+        this.brushSize = parseInt(e.target.value);
+        document.getElementById('valBrushSize').textContent = `${this.brushSize} px`;
+      });
+    }
+
+    if (btnClearDust) {
+      btnClearDust.addEventListener('click', () => {
+        this.cleanNoiseDust();
+      });
+    }
+
+    if (btnTraceAfterEdit) {
+      btnTraceAfterEdit.addEventListener('click', () => {
+        this.runAutoTrace();
+      });
+    }
+
+    // CAD Drawing & Entity Tools
+    const toolSelect = document.getElementById('toolSelect');
+    const btnCadLine = document.getElementById('btnCadLine');
+    const toolCadLine = document.getElementById('toolCadLine');
+    const btnCadRect = document.getElementById('btnCadRect');
+    const toolCadRect = document.getElementById('toolCadRect');
+    const btnCadCircle = document.getElementById('btnCadCircle');
+    const toolCadCircle = document.getElementById('toolCadCircle');
+    const btnCadDim = document.getElementById('btnCadDim');
+    const toolCadDim = document.getElementById('toolCadDim');
+    const btnDeleteSelected = document.getElementById('btnDeleteSelected');
+    const btnClearDims = document.getElementById('btnClearDims');
+
+    const setCadTool = (mode, label) => {
+      this.activeMode = this.activeMode === mode ? 'pan' : mode;
+      this.dimPoints = [];
+      this.tempCadShape = null;
+      this.updateToolbarActive();
+      this.showToast(`CAD Tool: ${this.activeMode === 'pan' ? 'Pan' : label}`);
+    };
+
+    if (toolSelect) toolSelect.addEventListener('click', () => setCadTool('select', 'Select & Move'));
+    if (btnCadLine) btnCadLine.addEventListener('click', () => setCadTool('cadLine', 'Draw Line'));
+    if (toolCadLine) toolCadLine.addEventListener('click', () => setCadTool('cadLine', 'Draw Line'));
+    if (btnCadRect) btnCadRect.addEventListener('click', () => setCadTool('cadRect', 'Draw Rectangle'));
+    if (toolCadRect) toolCadRect.addEventListener('click', () => setCadTool('cadRect', 'Draw Rectangle'));
+    if (btnCadCircle) btnCadCircle.addEventListener('click', () => setCadTool('cadCircle', 'Draw Circle'));
+    if (toolCadCircle) toolCadCircle.addEventListener('click', () => setCadTool('cadCircle', 'Draw Circle'));
+    if (btnCadDim) btnCadDim.addEventListener('click', () => setCadTool('cadDim', 'Add Dimension (Click 2 Points)'));
+    if (toolCadDim) toolCadDim.addEventListener('click', () => setCadTool('cadDim', 'Add Dimension (Click 2 Points)'));
+
+    if (btnDeleteSelected) {
+      btnDeleteSelected.addEventListener('click', () => {
+        this.deleteSelectedContour();
+      });
+    }
+
+    if (btnClearDims) {
+      btnClearDims.addEventListener('click', () => {
+        this.dimensions = [];
+        this.updateDimensionsUI();
+        this.render();
+        this.showToast('Measurements cleared');
+      });
+    }
+
+    // Toolbar Navigation & Zoom
     document.getElementById('toolPan').addEventListener('click', () => {
       this.activeMode = 'pan';
+      this.dimPoints = [];
+      this.tempCadShape = null;
       this.updateToolbarActive();
     });
 
@@ -397,7 +496,28 @@ class DigiTracerApp {
   }
 
   updateToolbarActive() {
-    document.getElementById('toolPan').classList.toggle('active', this.activeMode === 'pan');
+    const tools = ['toolPan', 'toolSelect', 'toolPixelEraser', 'toolPixelBrush', 'toolCadLine', 'toolCadRect', 'toolCadCircle', 'toolCadDim'];
+    tools.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('active');
+    });
+
+    const activeMap = {
+      pan: 'toolPan',
+      select: 'toolSelect',
+      pixelEraser: 'toolPixelEraser',
+      pixelBrush: 'toolPixelBrush',
+      cadLine: 'toolCadLine',
+      cadRect: 'toolCadRect',
+      cadCircle: 'toolCadCircle',
+      cadDim: 'toolCadDim'
+    };
+
+    const activeId = activeMap[this.activeMode];
+    if (activeId) {
+      const el = document.getElementById(activeId);
+      if (el) el.classList.add('active');
+    }
   }
 
   /* ----------------------------------------------------
@@ -420,17 +540,19 @@ class DigiTracerApp {
     window.addEventListener('mouseup', (e) => this.onMouseUp(e));
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
 
-    // Keyboard shortcuts
+    // Keyboard shortcuts for CAD operations
     window.addEventListener('keydown', (e) => {
       if (e.key === 'f' || e.key === 'F') {
         this.fitToScreen();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        this.deleteSelectedContour();
       } else if (e.key === 'Escape') {
-        if (this.activeMode === 'calibrate') {
-          this.activeMode = 'pan';
-          this.calibration.points = [];
-          document.getElementById('calibrateBtnText').textContent = 'Set 2 Calibration Points';
-          this.render();
-        }
+        this.activeMode = 'pan';
+        this.dimPoints = [];
+        this.tempCadShape = null;
+        this.calibration.points = [];
+        this.updateToolbarActive();
+        this.render();
       }
     });
   }
@@ -452,12 +574,79 @@ class DigiTracerApp {
     };
   }
 
+  paintPixelAt(worldX, worldY) {
+    if (!this.imgCtx) return;
+    this.imgCtx.save();
+    const isEraser = this.activeMode === 'pixelEraser';
+    this.imgCtx.fillStyle = isEraser ? '#f8f9fa' : '#111827';
+    this.imgCtx.beginPath();
+    this.imgCtx.arc(worldX, worldY, this.brushSize / 2, 0, Math.PI * 2);
+    this.imgCtx.fill();
+    this.imgCtx.restore();
+    this.render();
+  }
+
   onMouseDown(e) {
     const worldPt = this.clientToWorld(e.clientX, e.clientY);
     this.mouseDownPos = { x: e.clientX, y: e.clientY };
 
-    // Pan canvas with middle button or left click in pan mode
-    if (e.button === 1 || (e.button === 0 && this.activeMode === 'pan')) {
+    // 1. Pixel Painting Mode (Eraser / Ink Pen)
+    if (e.button === 0 && (this.activeMode === 'pixelEraser' || this.activeMode === 'pixelBrush')) {
+      this.isPainting = true;
+      this.paintPixelAt(worldPt.x, worldPt.y);
+      return;
+    }
+
+    // 2. CAD Line Tool
+    if (e.button === 0 && this.activeMode === 'cadLine') {
+      this.tempCadShape = { type: 'line', p1: worldPt, p2: worldPt };
+      this.render();
+      return;
+    }
+
+    // 3. CAD Rect Tool
+    if (e.button === 0 && this.activeMode === 'cadRect') {
+      this.tempCadShape = { type: 'rect', p1: worldPt, p2: worldPt };
+      this.render();
+      return;
+    }
+
+    // 4. CAD Circle Tool
+    if (e.button === 0 && this.activeMode === 'cadCircle') {
+      this.tempCadShape = { type: 'circle', center: worldPt, current: worldPt };
+      this.render();
+      return;
+    }
+
+    // 5. CAD Dimension Tool (Click 2 Points)
+    if (e.button === 0 && this.activeMode === 'cadDim') {
+      if (this.dimPoints.length === 0) {
+        this.dimPoints.push(worldPt);
+        this.showToast('Point 1 placed. Click Point 2 to place measurement.');
+        this.render();
+      } else {
+        const p1 = this.dimPoints[0];
+        const p2 = worldPt;
+        const distPx = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        const ppm = this.calibration.ppm || 1;
+        const mmDist = distPx / ppm;
+        this.dimensions.push({
+          id: Date.now(),
+          p1,
+          p2,
+          mmDist,
+          text: `${mmDist.toFixed(1)} ${this.calibration.unit}`
+        });
+        this.dimPoints = [];
+        this.updateDimensionsUI();
+        this.render();
+        this.showToast(`Measurement placed: ${mmDist.toFixed(1)} ${this.calibration.unit}`);
+      }
+      return;
+    }
+
+    // 6. Pan canvas with middle button or left click in pan/select mode
+    if (e.button === 1 || (e.button === 0 && (this.activeMode === 'pan' || this.activeMode === 'select'))) {
       this.view.isPanning = true;
       this.view.startX = e.clientX - this.view.x;
       this.view.startY = e.clientY - this.view.y;
@@ -465,7 +654,7 @@ class DigiTracerApp {
       return;
     }
 
-    // Calibration Mode
+    // 7. Calibration Mode
     if (e.button === 0 && this.activeMode === 'calibrate') {
       if (this.calibration.points.length < 2) {
         this.calibration.points.push(worldPt);
@@ -483,13 +672,14 @@ class DigiTracerApp {
 
           this.activeMode = 'pan';
           document.getElementById('calibrateBtnText').textContent = 'Scale Points Selected';
+          this.updateToolbarActive();
           this.render();
         }
       }
       return;
     }
 
-    // Manual Draw Mode
+    // 8. Manual Draw Mode
     if (e.button === 0 && this.activeMode === 'draw') {
       this.manualPath.push(worldPt);
       this.render();
@@ -497,6 +687,16 @@ class DigiTracerApp {
   }
 
   onMouseMove(e) {
+    const worldPt = this.clientToWorld(e.clientX, e.clientY);
+    this.mouseWorldPos = worldPt;
+
+    // Pixel Painting Drag
+    if (this.isPainting && (this.activeMode === 'pixelEraser' || this.activeMode === 'pixelBrush')) {
+      this.paintPixelAt(worldPt.x, worldPt.y);
+      return;
+    }
+
+    // Canvas Pan
     if (this.view.isPanning) {
       this.view.x = e.clientX - this.view.startX;
       this.view.y = e.clientY - this.view.startY;
@@ -504,8 +704,34 @@ class DigiTracerApp {
       return;
     }
 
+    // Live CAD Line Preview
+    if (this.tempCadShape && this.tempCadShape.type === 'line') {
+      this.tempCadShape.p2 = worldPt;
+      this.render();
+      return;
+    }
+
+    // Live CAD Rect Preview
+    if (this.tempCadShape && this.tempCadShape.type === 'rect') {
+      this.tempCadShape.p2 = worldPt;
+      this.render();
+      return;
+    }
+
+    // Live CAD Circle Preview
+    if (this.tempCadShape && this.tempCadShape.type === 'circle') {
+      this.tempCadShape.current = worldPt;
+      this.render();
+      return;
+    }
+
+    // Live Dimension Preview
+    if (this.activeMode === 'cadDim' && this.dimPoints.length === 1) {
+      this.render();
+      return;
+    }
+
     // Update coordinate status bar
-    const worldPt = this.clientToWorld(e.clientX, e.clientY);
     const mmX = (worldPt.x / this.calibration.ppm).toFixed(2);
     const mmY = (worldPt.y / this.calibration.ppm).toFixed(2);
     const pxX = Math.round(worldPt.x);
@@ -518,17 +744,101 @@ class DigiTracerApp {
     if (this.activeMode === 'calibrate' && this.calibration.points.length === 1) {
       this.calibrationPreviewPt = worldPt;
       this.render();
+    } else if (this.activeMode === 'pixelEraser' || this.activeMode === 'pixelBrush') {
+      this.render(); // Redraw brush cursor circle
     }
   }
 
   onMouseUp(e) {
+    const worldPt = this.clientToWorld(e.clientX, e.clientY);
+
+    // End pixel painting
+    if (this.isPainting) {
+      this.isPainting = false;
+      return;
+    }
+
+    // Commit CAD Line
+    if (this.tempCadShape && this.tempCadShape.type === 'line') {
+      const p1 = this.tempCadShape.p1;
+      const p2 = worldPt;
+      if (Math.hypot(p2.x - p1.x, p2.y - p1.y) > 4) {
+        const linePath = [p1, p2];
+        linePath.isLine = true;
+        linePath.originalPoints = linePath;
+        this.vectorPaths.push(linePath);
+        const mmLen = (Math.hypot(p2.x - p1.x, p2.y - p1.y) / (this.calibration.ppm || 1)).toFixed(1);
+        this.showToast(`CAD Line added (${mmLen} ${this.calibration.unit})`);
+      }
+      this.tempCadShape = null;
+      this.updateStats();
+      this.render();
+      return;
+    }
+
+    // Commit CAD Rect
+    if (this.tempCadShape && this.tempCadShape.type === 'rect') {
+      const p1 = this.tempCadShape.p1;
+      const p2 = worldPt;
+      const w = Math.abs(p2.x - p1.x);
+      const h = Math.abs(p2.y - p1.y);
+      if (w > 4 && h > 4) {
+        const minX = Math.min(p1.x, p2.x);
+        const maxX = Math.max(p1.x, p2.x);
+        const minY = Math.min(p1.y, p2.y);
+        const maxY = Math.max(p1.y, p2.y);
+        const rectPath = [
+          { x: minX, y: minY },
+          { x: maxX, y: minY },
+          { x: maxX, y: maxY },
+          { x: minX, y: maxY }
+        ];
+        rectPath.isRect = true;
+        rectPath.originalPoints = rectPath;
+        this.vectorPaths.push(rectPath);
+        const ppm = this.calibration.ppm || 1;
+        const wMM = (w / ppm).toFixed(1);
+        const hMM = (h / ppm).toFixed(1);
+        this.showToast(`CAD Rectangle added (${wMM} × ${hMM} ${this.calibration.unit})`);
+      }
+      this.tempCadShape = null;
+      this.updateStats();
+      this.render();
+      return;
+    }
+
+    // Commit CAD Circle
+    if (this.tempCadShape && this.tempCadShape.type === 'circle') {
+      const center = this.tempCadShape.center;
+      const radius = Math.hypot(worldPt.x - center.x, worldPt.y - center.y);
+      if (radius > 4) {
+        const fittedCircle = ImageTracer.fitCircle([
+          { x: center.x - radius, y: center.y },
+          { x: center.x + radius, y: center.y },
+          { x: center.x, y: center.y - radius },
+          { x: center.x, y: center.y + radius }
+        ]);
+        fittedCircle.cx = center.x;
+        fittedCircle.cy = center.y;
+        fittedCircle.radius = radius;
+        fittedCircle.diameter = radius * 2;
+        this.vectorPaths.push(fittedCircle);
+        const diaMM = (fittedCircle.diameter / (this.calibration.ppm || 1)).toFixed(1);
+        this.showToast(`CAD Circle added (⌀${diaMM} ${this.calibration.unit})`);
+      }
+      this.tempCadShape = null;
+      this.updateStats();
+      this.render();
+      return;
+    }
+
+    // Canvas Pan & Selection click
     if (this.view.isPanning) {
       this.view.isPanning = false;
       this.canvas.style.cursor = 'crosshair';
 
       // If mouse barely moved, treat as a selection click
       if (this.mouseDownPos && Math.hypot(e.clientX - this.mouseDownPos.x, e.clientY - this.mouseDownPos.y) < 6) {
-        const worldPt = this.clientToWorld(e.clientX, e.clientY);
         const clickedIdx = this.findContourAtPoint(worldPt);
         this.selectedContourIndex = clickedIdx;
         if (clickedIdx !== -1) {
@@ -537,6 +847,9 @@ class DigiTracerApp {
           if (path.isCircle) {
             const diaMM = (path.diameter / ppm).toFixed(1);
             this.showToast(`Selected Circle ⭕ (⌀${diaMM} mm)`);
+          } else if (path.isLine) {
+            const mmLen = (Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y) / ppm).toFixed(1);
+            this.showToast(`Selected Line (${mmLen} mm)`);
           } else {
             const circ = Math.round(ImageTracer.calculateCircularity(path) * 100);
             this.showToast(`Selected Shape (Circularity: ${circ}%)`);
@@ -720,6 +1033,8 @@ class DigiTracerApp {
     this.rawContours = [];
     this.vectorPaths = [];
     this.manualPath = [];
+    this.dimensions = [];
+    this.updateDimensionsUI();
 
     this.fitToScreen();
     this.render();
@@ -790,8 +1105,7 @@ class DigiTracerApp {
 
     document.getElementById('canvasStatus').textContent = 'Tracing contours...';
 
-    // 1. Process image on offscreen canvas
-    this.imgCtx.drawImage(this.sourceImage, 0, 0);
+    // 1. Process image on offscreen canvas (preserves user pixel edits, eraser & ink pen)
     const { binary, previewImageData } = ImageTracer.processToBinary(
       this.imgCtx,
       this.imageWidth,
@@ -937,19 +1251,19 @@ class DigiTracerApp {
       this.renderCADGrid();
     }
 
-    // 2. Image Layer (Original or Filtered/Binary)
+    // 2. Image Layer (Original or Filtered/Binary, including pixel eraser and ink pen edits)
     if (this.layers.image && this.sourceImage) {
       this.ctx.save();
       if (this.filters.showBinary && this.binaryPreviewData) {
         // Draw binary mask
-        this.ctx.putImageData(this.binaryPreviewData, 0, 0); // PutImageData is unscaled
+        this.ctx.putImageData(this.binaryPreviewData, 0, 0);
       } else {
         // Apply CSS filters on context
         const contrastPct = this.filters.contrast * 100;
         const brightnessPct = 100 + this.filters.brightness;
         const invertPct = this.filters.invert ? 100 : 0;
         this.ctx.filter = `contrast(${contrastPct}%) brightness(${brightnessPct}%) invert(${invertPct}%)`;
-        this.ctx.drawImage(this.sourceImage, 0, 0);
+        this.ctx.drawImage(this.imgCanvas, 0, 0);
       }
       this.ctx.restore();
 
@@ -964,13 +1278,22 @@ class DigiTracerApp {
       this.renderVectors();
     }
 
-    // 4. Manual Path in progress
+    // 4. CAD Geometry Previews (Line, Rect, Circle, Dim being drawn)
+    this.renderCadPreviews();
+
+    // 5. CAD Measurement Dimensions Layer
+    this.renderDimensions();
+
+    // 6. Manual Path in progress
     if (this.manualPath.length > 0) {
       this.renderManualPath();
     }
 
-    // 5. Calibration Overlay
+    // 7. Calibration Overlay
     this.renderCalibrationOverlay();
+
+    // 8. Pixel brush / eraser ring indicator
+    this.renderBrushCursor();
 
     this.ctx.restore();
   }
@@ -1073,6 +1396,29 @@ class DigiTracerApp {
       }
 
       if (path.length < 2) return;
+
+      // CAD Line Rendering
+      if (path.isLine && path.length >= 2) {
+        this.ctx.beginPath();
+        this.ctx.moveTo(path[0].x, path[0].y);
+        this.ctx.lineTo(path[1].x, path[1].y);
+        this.ctx.strokeStyle = isSelected ? '#ec4899' : '#10b981';
+        this.ctx.lineWidth = isSelected ? lineWidth * 1.6 : lineWidth;
+        this.ctx.shadowColor = isSelected ? 'rgba(236, 72, 153, 0.8)' : 'rgba(16, 185, 129, 0.4)';
+        this.ctx.shadowBlur = isSelected ? 12 : 6;
+        this.ctx.stroke();
+
+        if (this.layers.points || isSelected) {
+          this.ctx.fillStyle = isSelected ? '#ec4899' : '#ffffff';
+          const nodeRadius = 3 / this.view.scale;
+          [path[0], path[1]].forEach(pt => {
+            this.ctx.beginPath();
+            this.ctx.arc(pt.x, pt.y, nodeRadius, 0, Math.PI * 2);
+            this.ctx.fill();
+          });
+        }
+        return;
+      }
 
       this.ctx.beginPath();
       this.ctx.moveTo(path[0].x, path[0].y);
@@ -1195,6 +1541,277 @@ class DigiTracerApp {
   }
 
   /* ----------------------------------------------------
+     CAD Rendering, Dimensions & Editing Methods
+     ---------------------------------------------------- */
+  renderCadPreviews() {
+    this.ctx.save();
+    const ppm = this.calibration.ppm || 1.0;
+    const lineWidth = 2 / this.view.scale;
+    const fontSize = Math.max(10, 12 / this.view.scale);
+    this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
+
+    // 1. Live Line preview
+    if (this.tempCadShape && this.tempCadShape.type === 'line') {
+      const p1 = this.tempCadShape.p1;
+      const p2 = this.tempCadShape.p2;
+      this.ctx.strokeStyle = '#10b981';
+      this.ctx.lineWidth = lineWidth;
+      this.ctx.setLineDash([5 / this.view.scale, 3 / this.view.scale]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(p1.x, p1.y);
+      this.ctx.lineTo(p2.x, p2.y);
+      this.ctx.stroke();
+      this.ctx.setLineDash([]);
+
+      const lenMM = (Math.hypot(p2.x - p1.x, p2.y - p1.y) / ppm).toFixed(1);
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      this.ctx.fillStyle = '#10b981';
+      this.ctx.fillText(`L: ${lenMM} ${this.calibration.unit}`, midX + 8 / this.view.scale, midY - 6 / this.view.scale);
+    }
+
+    // 2. Live Rect preview
+    if (this.tempCadShape && this.tempCadShape.type === 'rect') {
+      const p1 = this.tempCadShape.p1;
+      const p2 = this.tempCadShape.p2;
+      const minX = Math.min(p1.x, p2.x);
+      const minY = Math.min(p1.y, p2.y);
+      const w = Math.abs(p2.x - p1.x);
+      const h = Math.abs(p2.y - p1.y);
+
+      this.ctx.strokeStyle = '#38bdf8';
+      this.ctx.lineWidth = lineWidth;
+      this.ctx.setLineDash([5 / this.view.scale, 3 / this.view.scale]);
+      this.ctx.strokeRect(minX, minY, w, h);
+      this.ctx.fillStyle = 'rgba(56, 189, 248, 0.1)';
+      this.ctx.fillRect(minX, minY, w, h);
+      this.ctx.setLineDash([]);
+
+      const wMM = (w / ppm).toFixed(1);
+      const hMM = (h / ppm).toFixed(1);
+      this.ctx.fillStyle = '#38bdf8';
+      this.ctx.fillText(`${wMM} × ${hMM} ${this.calibration.unit}`, minX + 6 / this.view.scale, minY - 6 / this.view.scale);
+    }
+
+    // 3. Live Circle preview
+    if (this.tempCadShape && this.tempCadShape.type === 'circle') {
+      const c = this.tempCadShape.center;
+      const cur = this.tempCadShape.current;
+      const r = Math.hypot(cur.x - c.x, cur.y - c.y);
+
+      this.ctx.strokeStyle = '#f59e0b';
+      this.ctx.lineWidth = lineWidth;
+      this.ctx.setLineDash([5 / this.view.scale, 3 / this.view.scale]);
+      this.ctx.beginPath();
+      this.ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+      this.ctx.stroke();
+      this.ctx.setLineDash([]);
+
+      const crossSize = 10 / this.view.scale;
+      this.ctx.beginPath();
+      this.ctx.moveTo(c.x - crossSize, c.y);
+      this.ctx.lineTo(c.x + crossSize, c.y);
+      this.ctx.moveTo(c.x, c.y - crossSize);
+      this.ctx.lineTo(c.x, c.y + crossSize);
+      this.ctx.stroke();
+
+      const diaMM = ((r * 2) / ppm).toFixed(1);
+      this.ctx.fillStyle = '#f59e0b';
+      this.ctx.fillText(`⌀${diaMM} ${this.calibration.unit}`, c.x + r + 6 / this.view.scale, c.y);
+    }
+
+    // 4. Dimension placement point 1 preview
+    if (this.activeMode === 'cadDim' && this.dimPoints.length === 1 && this.mouseWorldPos) {
+      const p1 = this.dimPoints[0];
+      const p2 = this.mouseWorldPos;
+
+      this.ctx.strokeStyle = '#ec4899';
+      this.ctx.lineWidth = lineWidth;
+      this.ctx.setLineDash([4 / this.view.scale, 4 / this.view.scale]);
+      this.ctx.beginPath();
+      this.ctx.moveTo(p1.x, p1.y);
+      this.ctx.lineTo(p2.x, p2.y);
+      this.ctx.stroke();
+      this.ctx.setLineDash([]);
+
+      this.ctx.fillStyle = '#ec4899';
+      this.ctx.beginPath();
+      this.ctx.arc(p1.x, p1.y, 4 / this.view.scale, 0, Math.PI * 2);
+      this.ctx.fill();
+
+      const distMM = (Math.hypot(p2.x - p1.x, p2.y - p1.y) / ppm).toFixed(1);
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      this.ctx.fillText(`📏 ${distMM} ${this.calibration.unit}`, midX + 8 / this.view.scale, midY - 6 / this.view.scale);
+    }
+
+    this.ctx.restore();
+  }
+
+  renderDimensions() {
+    if (!this.dimensions || this.dimensions.length === 0) return;
+    this.ctx.save();
+    const ppm = this.calibration.ppm || 1.0;
+    const lineWidth = 1.5 / this.view.scale;
+    const tickLen = 6 / this.view.scale;
+    const slash = 5 / this.view.scale;
+    const fontSize = Math.max(10, 11 / this.view.scale);
+    this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
+
+    this.dimensions.forEach((dim) => {
+      const { p1, p2, text } = dim;
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 1) return;
+
+      const ux = dx / dist;
+      const uy = dy / dist;
+      const nx = -uy;
+      const ny = ux;
+
+      this.ctx.strokeStyle = '#ec4899';
+      this.ctx.lineWidth = lineWidth;
+
+      // Witness extension lines
+      this.ctx.beginPath();
+      this.ctx.moveTo(p1.x - nx * tickLen, p1.y - ny * tickLen);
+      this.ctx.lineTo(p1.x + nx * tickLen, p1.y + ny * tickLen);
+      this.ctx.moveTo(p2.x - nx * tickLen, p2.y - ny * tickLen);
+      this.ctx.lineTo(p2.x + nx * tickLen, p2.y + ny * tickLen);
+      this.ctx.stroke();
+
+      // CAD 45-degree architectural ticks at endpoints
+      this.ctx.beginPath();
+      this.ctx.moveTo(p1.x - slash, p1.y - slash);
+      this.ctx.lineTo(p1.x + slash, p1.y + slash);
+      this.ctx.moveTo(p2.x - slash, p2.y - slash);
+      this.ctx.lineTo(p2.x + slash, p2.y + slash);
+      this.ctx.stroke();
+
+      // Main dimension line
+      this.ctx.beginPath();
+      this.ctx.moveTo(p1.x, p1.y);
+      this.ctx.lineTo(p2.x, p2.y);
+      this.ctx.stroke();
+
+      // Measurement value badge
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      const textMetrics = this.ctx.measureText(text);
+      const textW = textMetrics.width;
+      const padX = 6 / this.view.scale;
+      const padY = 3 / this.view.scale;
+
+      this.ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      this.ctx.strokeStyle = '#ec4899';
+      this.ctx.lineWidth = 1 / this.view.scale;
+      this.ctx.fillRect(midX - textW / 2 - padX, midY - fontSize / 2 - padY, textW + padX * 2, fontSize + padY * 2);
+      this.ctx.strokeRect(midX - textW / 2 - padX, midY - fontSize / 2 - padY, textW + padX * 2, fontSize + padY * 2);
+
+      this.ctx.fillStyle = '#f472b6';
+      this.ctx.textAlign = 'center';
+      this.ctx.textBaseline = 'middle';
+      this.ctx.fillText(text, midX, midY);
+    });
+
+    this.ctx.restore();
+  }
+
+  renderBrushCursor() {
+    if ((this.activeMode === 'pixelEraser' || this.activeMode === 'pixelBrush') && this.mouseWorldPos) {
+      this.ctx.save();
+      const r = this.brushSize / 2;
+      this.ctx.beginPath();
+      this.ctx.arc(this.mouseWorldPos.x, this.mouseWorldPos.y, r, 0, Math.PI * 2);
+      this.ctx.strokeStyle = this.activeMode === 'pixelEraser' ? '#f43f5e' : '#00f0ff';
+      this.ctx.lineWidth = 1.5 / this.view.scale;
+      this.ctx.fillStyle = this.activeMode === 'pixelEraser' ? 'rgba(244, 63, 94, 0.15)' : 'rgba(0, 240, 255, 0.15)';
+      this.ctx.fill();
+      this.ctx.stroke();
+      this.ctx.restore();
+    }
+  }
+
+  cleanNoiseDust() {
+    if (!this.imgCtx || !this.imageWidth || !this.imageHeight) return;
+    const imgData = this.imgCtx.getImageData(0, 0, this.imageWidth, this.imageHeight);
+    const data = imgData.data;
+    const w = this.imageWidth;
+    const h = this.imageHeight;
+    let cleanedCount = 0;
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = (y * w + x) * 4;
+        const lum = (data[idx] * 299 + data[idx + 1] * 587 + data[idx + 2] * 114) / 1000;
+        if (lum < 160) {
+          let darkNeighbors = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue;
+              const nIdx = ((y + dy) * w + (x + dx)) * 4;
+              const nLum = (data[nIdx] * 299 + data[nIdx + 1] * 587 + data[nIdx + 2] * 114) / 1000;
+              if (nLum < 160) darkNeighbors++;
+            }
+          }
+          if (darkNeighbors <= 1) {
+            data[idx] = 255;
+            data[idx + 1] = 255;
+            data[idx + 2] = 255;
+            cleanedCount++;
+          }
+        }
+      }
+    }
+    this.imgCtx.putImageData(imgData, 0, 0);
+    this.render();
+    this.showToast(`Cleaned ${cleanedCount} isolated scan dust speckles!`);
+  }
+
+  updateDimensionsUI() {
+    const listContainer = document.getElementById('dimListContainer');
+    const countBadge = document.getElementById('countDims');
+    if (countBadge) countBadge.textContent = this.dimensions.length;
+    if (!listContainer) return;
+
+    if (this.dimensions.length === 0) {
+      listContainer.innerHTML = '<div class="dim-empty-hint" style="font-size: 0.72rem; color: var(--text-dim); padding: 8px; text-align: center;">No measurements placed. Click 📐 Measure to add.</div>';
+      return;
+    }
+
+    listContainer.innerHTML = '';
+    this.dimensions.forEach((dim, idx) => {
+      const item = document.createElement('div');
+      item.className = 'dim-item';
+      item.innerHTML = `
+        <span class="dim-label">📐 #${idx + 1}: <strong>${dim.text}</strong></span>
+        <button class="btn-dim-del" title="Delete measurement">&times;</button>
+      `;
+      item.querySelector('.btn-dim-del').addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.dimensions.splice(idx, 1);
+        this.updateDimensionsUI();
+        this.render();
+        this.showToast('Measurement deleted');
+      });
+      listContainer.appendChild(item);
+    });
+  }
+
+  deleteSelectedContour() {
+    if (this.selectedContourIndex >= 0 && this.selectedContourIndex < this.vectorPaths.length) {
+      this.vectorPaths.splice(this.selectedContourIndex, 1);
+      this.selectedContourIndex = -1;
+      this.updateStats();
+      this.render();
+      this.showToast('Deleted selected CAD element');
+    } else {
+      this.showToast('No shape selected. Click a vector on canvas first.', true);
+    }
+  }
+
+  /* ----------------------------------------------------
      CAD & Vector Export Methods
      ---------------------------------------------------- */
   getMillimeterPaths() {
@@ -1212,29 +1829,43 @@ class DigiTracerApp {
         mmCircle.diameter = path.diameter / ppm;
         return mmCircle;
       }
-      return path.map(pt => ({
+      const mmPath = path.map(pt => ({
         x: pt.x / ppm,
         y: pt.y / ppm
       }));
+      if (path.isLine) mmPath.isLine = true;
+      if (path.isRect) mmPath.isRect = true;
+      return mmPath;
     });
   }
 
+  getMillimeterDimensions() {
+    const ppm = this.calibration.ppm || 1.0;
+    return this.dimensions.map(dim => ({
+      p1: { x: dim.p1.x / ppm, y: dim.p1.y / ppm },
+      p2: { x: dim.p2.x / ppm, y: dim.p2.y / ppm },
+      mmDist: dim.mmDist,
+      text: dim.text
+    }));
+  }
+
   exportDXF() {
-    if (this.vectorPaths.length === 0) {
-      this.showToast('No contours to export! Trace an image first.', true);
+    if (this.vectorPaths.length === 0 && this.dimensions.length === 0) {
+      this.showToast('No contours or measurements to export! Trace an image first.', true);
       return;
     }
     const mmPaths = this.getMillimeterPaths();
     DXFGenerator.download(mmPaths, 'digitracer_part.dxf', {
       unit: this.calibration.unit,
-      layerName: 'DIGITRACER_CONTOUR'
+      layerName: 'DIGITRACER_CONTOUR',
+      dimensions: this.getMillimeterDimensions()
     });
-    this.showToast('Downloaded AutoCAD DXF file!');
+    this.showToast('Downloaded AutoCAD DXF file with CAD entities & dimensions!');
   }
 
   exportSVG() {
-    if (this.vectorPaths.length === 0) {
-      this.showToast('No contours to export! Trace an image first.', true);
+    if (this.vectorPaths.length === 0 && this.dimensions.length === 0) {
+      this.showToast('No contours or measurements to export! Trace an image first.', true);
       return;
     }
     const svgContent = this.generateSVGString();
@@ -1251,8 +1882,8 @@ class DigiTracerApp {
   }
 
   exportJSON() {
-    if (this.vectorPaths.length === 0) {
-      this.showToast('No contours to export! Trace an image first.', true);
+    if (this.vectorPaths.length === 0 && this.dimensions.length === 0) {
+      this.showToast('No contours or measurements to export! Trace an image first.', true);
       return;
     }
     const exportData = {
@@ -1263,18 +1894,20 @@ class DigiTracerApp {
         date: new Date().toISOString()
       },
       pathsMM: this.getMillimeterPaths(),
-      pathsPixel: this.vectorPaths
+      dimensionsMM: this.getMillimeterDimensions(),
+      pathsPixel: this.vectorPaths,
+      dimensionsPixel: this.dimensions
     };
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'digitracer_paths.json';
+    link.download = 'digitracer_cad_data.json';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    this.showToast('Downloaded path coordinate JSON!');
+    this.showToast('Downloaded CAD data JSON!');
   }
 
   generateSVGString() {
@@ -1293,6 +1926,11 @@ class DigiTracerApp {
         return;
       }
 
+      if (path.isLine && path.length >= 2) {
+        pathsMarkup += `  <line x1="${path[0].x.toFixed(3)}" y1="${path[0].y.toFixed(3)}" x2="${path[1].x.toFixed(3)}" y2="${path[1].y.toFixed(3)}" stroke="#10b981" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
+        return;
+      }
+
       if (path.length < 2) return;
       let d = `M ${path[0].x.toFixed(3)} ${path[0].y.toFixed(3)}`;
       for (let i = 1; i < path.length; i++) {
@@ -1302,6 +1940,19 @@ class DigiTracerApp {
       pathsMarkup += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
     });
 
+    let dimsMarkup = '';
+    const mmDims = this.getMillimeterDimensions();
+    if (mmDims.length > 0) {
+      dimsMarkup += '  <g id="dimensions">\n';
+      mmDims.forEach(dim => {
+        dimsMarkup += `    <line x1="${dim.p1.x.toFixed(3)}" y1="${dim.p1.y.toFixed(3)}" x2="${dim.p2.x.toFixed(3)}" y2="${dim.p2.y.toFixed(3)}" stroke="#ec4899" stroke-width="0.25" stroke-dasharray="1,1" />\n`;
+        const midX = (dim.p1.x + dim.p2.x) / 2;
+        const midY = (dim.p1.y + dim.p2.y) / 2;
+        dimsMarkup += `    <text x="${midX.toFixed(3)}" y="${(midY - 0.8).toFixed(3)}" font-size="2.2" fill="#ec4899" text-anchor="middle" font-family="sans-serif">${dim.text}</text>\n`;
+      });
+      dimsMarkup += '  </g>\n';
+    }
+
     return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg xmlns="http://www.w3.org/2000/svg" 
      width="${widthMM}mm" height="${heightMM}mm" 
@@ -1310,7 +1961,7 @@ class DigiTracerApp {
   <desc>Exported from DigiTracer (Scale: 1 ${this.calibration.unit} = ${ppm.toFixed(2)} px)</desc>
   <g id="contours">
 ${pathsMarkup}  </g>
-</svg>`;
+${dimsMarkup}</svg>`;
   }
 
   copySVG() {
