@@ -247,6 +247,22 @@ const ImageTracer = {
   },
 
   /**
+   * Ray-casting test to determine if a 2D point is inside a closed polygon
+   */
+  isPointInPolygon(point, polygon) {
+    if (!polygon || polygon.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      const intersect = ((yi > point.y) !== (yj > point.y)) &&
+        (point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  },
+
+  /**
    * Fits a least-squares circle to a set of contour points using Kåsa's algebraic method.
    * Returns a complete Circle object with exact center, radius, and polygon vertices.
    */
@@ -322,7 +338,9 @@ const ImageTracer = {
     resultPath.radius = radius;
     resultPath.diameter = radius * 2;
     resultPath.circularity = circularity;
-    resultPath.originalPoints = points;
+    const rootContour = points.originalContour || points.originalPoints || points;
+    resultPath.originalPoints = rootContour;
+    resultPath.originalContour = rootContour;
 
     return resultPath;
   },
@@ -365,6 +383,223 @@ const ImageTracer = {
     }
 
     return smoothed;
+  },
+
+  /**
+   * Fits a straight line to an elongated contour with options for center, left, or right edge.
+   * Uses Principal Component Analysis (PCA) to find the longitudinal orientation, or a constrained targetAngle.
+   * @param {Array<{x: number, y: number}>} points - Contour vertices
+   * @param {string} alignment - 'center' | 'left' | 'right'
+   * @param {number|null} targetAngle - Optional fixed orientation constraint (in radians)
+   * @returns {Array<{x: number, y: number}>} - 2-point line path with .isLine = true
+   */
+  fitLine(points, alignment = 'center', targetAngle = null) {
+    if (!points || points.length < 2) return null;
+    const n = points.length;
+
+    // 1. Centroid
+    let meanX = 0, meanY = 0;
+    for (let i = 0; i < n; i++) {
+      meanX += points[i].x;
+      meanY += points[i].y;
+    }
+    meanX /= n;
+    meanY /= n;
+
+    let angle;
+    if (targetAngle !== null && targetAngle !== undefined && !isNaN(targetAngle)) {
+      angle = targetAngle;
+    } else {
+      // 2. Covariance matrix for principal direction (PCA)
+      let sxx = 0, sxy = 0, syy = 0;
+      for (let i = 0; i < n; i++) {
+        const dx = points[i].x - meanX;
+        const dy = points[i].y - meanY;
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+      }
+      // Principal angle (major axis direction)
+      angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    }
+
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+
+    // 3. Project points onto major (u) and transverse (v) axes
+    let minU = Infinity, maxU = -Infinity;
+    let minV = Infinity, maxV = -Infinity;
+
+    for (let i = 0; i < n; i++) {
+      const dx = points[i].x - meanX;
+      const dy = points[i].y - meanY;
+      const u = dx * cosA + dy * sinA;
+      const v = -dx * sinA + dy * cosA;
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+
+    // Determine target offset vTarget
+    let vTarget = (minV + maxV) / 2; // Center
+    if (alignment === 'left') {
+      vTarget = maxV;
+    } else if (alignment === 'right') {
+      vTarget = minV;
+    }
+
+    // Convert (minU, vTarget) and (maxU, vTarget) back to world coordinates
+    const p1 = {
+      x: meanX + minU * cosA - vTarget * sinA,
+      y: meanY + minU * sinA + vTarget * cosA
+    };
+    const p2 = {
+      x: meanX + maxU * cosA - vTarget * sinA,
+      y: meanY + maxU * sinA + vTarget * cosA
+    };
+
+    const rootContour = points.originalContour || points.originalPoints || points;
+    const linePath = [p1, p2];
+    linePath.isLine = true;
+    linePath.alignment = alignment;
+    linePath.angle = angle;
+    linePath.originalPoints = rootContour;
+    linePath.originalContour = rootContour;
+    return linePath;
+  },
+
+  /**
+   * Fits a slot (capsule shape: two parallel lines and two semicircular ends)
+   * to a contour using oriented bounding geometry.
+   * @param {Array<{x: number, y: number}>} points - Contour vertices
+   * @param {number} numSegments - Resolution of semicircular ends
+   * @returns {Array<{x: number, y: number}>} - Slot path with isSlot = true
+   */
+  fitSlot(points, numSegments = 32) {
+    if (!points || points.length < 3) return null;
+    const n = points.length;
+
+    // 1. Centroid
+    let meanX = 0, meanY = 0;
+    for (let i = 0; i < n; i++) {
+      meanX += points[i].x;
+      meanY += points[i].y;
+    }
+    meanX /= n;
+    meanY /= n;
+
+    // 2. Covariance for principal orientation
+    let sxx = 0, sxy = 0, syy = 0;
+    for (let i = 0; i < n; i++) {
+      const dx = points[i].x - meanX;
+      const dy = points[i].y - meanY;
+      sxx += dx * dx;
+      sxy += dx * dy;
+      syy += dy * dy;
+    }
+
+    let angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    let cosA = Math.cos(angle);
+    let sinA = Math.sin(angle);
+
+    // 3. Extents in (u, v)
+    let minU = Infinity, maxU = -Infinity;
+    let minV = Infinity, maxV = -Infinity;
+
+    for (let i = 0; i < n; i++) {
+      const dx = points[i].x - meanX;
+      const dy = points[i].y - meanY;
+      const u = dx * cosA + dy * sinA;
+      const v = -dx * sinA + dy * cosA;
+      if (u < minU) minU = u;
+      if (u > maxU) maxU = u;
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+
+    let length = maxU - minU;
+    let width = maxV - minV;
+
+    // Ensure length is the longer dimension along u axis
+    if (width > length) {
+      angle += Math.PI / 2;
+      cosA = Math.cos(angle);
+      sinA = Math.sin(angle);
+      minU = Infinity; maxU = -Infinity;
+      minV = Infinity; maxV = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const dx = points[i].x - meanX;
+        const dy = points[i].y - meanY;
+        const u = dx * cosA + dy * sinA;
+        const v = -dx * sinA + dy * cosA;
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+      }
+      length = maxU - minU;
+      width = maxV - minV;
+    }
+
+    const radius = width / 2;
+    const halfDist = Math.max(0, (length - width) / 2);
+    const centerU = (minU + maxU) / 2;
+    const centerV = (minV + maxV) / 2;
+
+    // Center in world coordinates (rotate (centerU, centerV) back from local uv frame)
+    const cx = meanX + centerU * cosA - centerV * sinA;
+    const cy = meanY + centerU * sinA + centerV * cosA;
+
+    // The two end centers
+    const c1 = {
+      x: cx - halfDist * cosA,
+      y: cy - halfDist * sinA
+    };
+    const c2 = {
+      x: cx + halfDist * cosA,
+      y: cy + halfDist * sinA
+    };
+
+    // Construct capsule polygon vertices
+    const slotPoly = [];
+    const halfSegs = Math.max(8, Math.floor(numSegments / 2));
+
+    // End 2 (positive u) semicircle
+    for (let i = 0; i <= halfSegs; i++) {
+      const a = angle - Math.PI / 2 + (i / halfSegs) * Math.PI;
+      slotPoly.push({
+        x: c2.x + Math.cos(a) * radius,
+        y: c2.y + Math.sin(a) * radius
+      });
+    }
+
+    // End 1 (negative u) semicircle
+    for (let i = 0; i <= halfSegs; i++) {
+      const a = angle + Math.PI / 2 + (i / halfSegs) * Math.PI;
+      slotPoly.push({
+        x: c1.x + Math.cos(a) * radius,
+        y: c1.y + Math.sin(a) * radius
+      });
+    }
+
+    const result = [...slotPoly];
+    result.isSlot = true;
+    result.cx = cx;
+    result.cy = cy;
+    result.c1 = c1;
+    result.c2 = c2;
+    result.radius = radius;
+    result.width = width;
+    result.slotWidth = width;
+    result.slotLength = length;
+    result.lengthVal = length;
+    result.angle = angle;
+    result.constructionLine = { p1: { x: c1.x, y: c1.y }, p2: { x: c2.x, y: c2.y } };
+    const rootContour = points.originalContour || points.originalPoints || points;
+    result.originalPoints = rootContour;
+    result.originalContour = rootContour;
+    return result;
   }
 };
 

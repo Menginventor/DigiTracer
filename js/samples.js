@@ -144,6 +144,21 @@ const SampleGenerator = {
       ctx.fill();
     });
 
+    // 2 Adjustment Capsule Slots (Mounting guide slots)
+    const slotHalfTravel = 22;
+    const slotRadius = 12;
+    const slotOffsets = [-95, 95];
+    slotOffsets.forEach(sx => {
+      const x = centerX + sx;
+      const y1 = centerY - slotHalfTravel;
+      const y2 = centerY + slotHalfTravel;
+      ctx.beginPath();
+      ctx.arc(x, y1, slotRadius, Math.PI, 0, false);
+      ctx.arc(x, y2, slotRadius, 0, Math.PI, false);
+      ctx.closePath();
+      ctx.fill();
+    });
+
     ctx.restore();
 
     // Subtle edge chamfer highlight on part
@@ -152,6 +167,17 @@ const SampleGenerator = {
     ctx.beginPath();
     ctx.arc(centerX, centerY, 65, 0, Math.PI * 2);
     ctx.stroke();
+
+    slotOffsets.forEach(sx => {
+      const x = centerX + sx;
+      const y1 = centerY - slotHalfTravel;
+      const y2 = centerY + slotHalfTravel;
+      ctx.beginPath();
+      ctx.arc(x, y1, slotRadius, Math.PI, 0, false);
+      ctx.arc(x, y2, slotRadius, 0, Math.PI, false);
+      ctx.closePath();
+      ctx.stroke();
+    });
 
     // Annotation text on paper
     ctx.fillStyle = '#4b5563';

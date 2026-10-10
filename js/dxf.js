@@ -116,20 +116,56 @@ const DXFGenerator = {
         dxf += '10\n' + pt.x.toFixed(4) + '\n';
         dxf += '20\n' + (-pt.y).toFixed(4) + '\n';
       }
+
+      // Slot Construction Centerline
+      if (path.isSlot && path.c1 && path.c2) {
+        dxf += '0\nLINE\n5\n' + nextHandle() + '\n100\nAcDbEntity\n8\nCENTERLINES\n62\n1\n100\nAcDbLine\n';
+        dxf += '10\n' + path.c1.x.toFixed(4) + '\n20\n' + (-path.c1.y).toFixed(4) + '\n30\n0.0000\n';
+        dxf += '11\n' + path.c2.x.toFixed(4) + '\n21\n' + (-path.c2.y).toFixed(4) + '\n31\n0.0000\n';
+      }
     });
 
     // Dimensions Layer Entities
     if (options.dimensions && options.dimensions.length > 0) {
       options.dimensions.forEach((dim) => {
         if (!dim.p1 || !dim.p2) return;
+        const p1 = dim.p1;
+        const p2 = dim.p2;
+        const offset = dim.offset || 0;
+
+        let p1Line = p1;
+        let p2Line = p2;
+
+        if (Math.abs(offset) > 0.001) {
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 0.001) {
+            const nx = -dy / dist;
+            const ny = dx / dist;
+            p1Line = { x: p1.x + offset * nx, y: p1.y + offset * ny };
+            p2Line = { x: p2.x + offset * nx, y: p2.y + offset * ny };
+
+            // Extension / witness line 1
+            dxf += '0\nLINE\n5\n' + nextHandle() + '\n100\nAcDbEntity\n8\nDIMENSIONS\n62\n8\n100\nAcDbLine\n';
+            dxf += '10\n' + p1.x.toFixed(4) + '\n20\n' + (-p1.y).toFixed(4) + '\n30\n0.0000\n';
+            dxf += '11\n' + p1Line.x.toFixed(4) + '\n21\n' + (-p1Line.y).toFixed(4) + '\n31\n0.0000\n';
+
+            // Extension / witness line 2
+            dxf += '0\nLINE\n5\n' + nextHandle() + '\n100\nAcDbEntity\n8\nDIMENSIONS\n62\n8\n100\nAcDbLine\n';
+            dxf += '10\n' + p2.x.toFixed(4) + '\n20\n' + (-p2.y).toFixed(4) + '\n30\n0.0000\n';
+            dxf += '11\n' + p2Line.x.toFixed(4) + '\n21\n' + (-p2Line.y).toFixed(4) + '\n31\n0.0000\n';
+          }
+        }
+
         // Dimension Line
         dxf += '0\nLINE\n5\n' + nextHandle() + '\n100\nAcDbEntity\n8\nDIMENSIONS\n62\n1\n100\nAcDbLine\n';
-        dxf += '10\n' + dim.p1.x.toFixed(4) + '\n20\n' + (-dim.p1.y).toFixed(4) + '\n30\n0.0000\n';
-        dxf += '11\n' + dim.p2.x.toFixed(4) + '\n21\n' + (-dim.p2.y).toFixed(4) + '\n31\n0.0000\n';
+        dxf += '10\n' + p1Line.x.toFixed(4) + '\n20\n' + (-p1Line.y).toFixed(4) + '\n30\n0.0000\n';
+        dxf += '11\n' + p2Line.x.toFixed(4) + '\n21\n' + (-p2Line.y).toFixed(4) + '\n31\n0.0000\n';
 
         // Dimension Text
-        const midX = (dim.p1.x + dim.p2.x) / 2;
-        const midY = (dim.p1.y + dim.p2.y) / 2;
+        const midX = (p1Line.x + p2Line.x) / 2;
+        const midY = (p1Line.y + p2Line.y) / 2;
         dxf += '0\nTEXT\n5\n' + nextHandle() + '\n100\nAcDbEntity\n8\nDIMENSIONS\n62\n7\n100\nAcDbText\n';
         dxf += '10\n' + midX.toFixed(4) + '\n20\n' + (-midY + 1.5).toFixed(4) + '\n30\n0.0000\n';
         dxf += '40\n2.5000\n'; // Height

@@ -35,6 +35,18 @@
           <span class="indicator-dot"></span>
           <span id="scaleStatusText">Scale: 300 DPI (11.81 px/mm)</span>
         </div>
+        <button id="btnHeaderUndo" class="btn btn-secondary" title="Undo (Ctrl+Z)" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 7v6h6M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+          </svg>
+          Undo
+        </button>
+        <button id="btnHeaderRedo" class="btn btn-secondary" title="Redo (Ctrl+Y)" disabled>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 7v6h-6M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
+          </svg>
+          Redo
+        </button>
         <button id="btnTestScan" class="btn btn-secondary" title="Load user scanned test image">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -289,38 +301,72 @@
                 </label>
               </div>
 
-              <!-- Circle Recognition Card -->
+              <!-- Manual Shape, Slot & Line CAD Conversion Card -->
               <div class="action-card" style="margin-top: 14px;">
                 <div class="card-badge-title">
-                  <span class="mini-tag">⭕ Shape CAD</span>
-                  <strong>Convert Shapes to Circles</strong>
+                  <span class="mini-tag">📐 CAD Fitting</span>
+                  <strong>Convert Contour to CAD</strong>
                 </div>
-                <p class="step-hint">Recognize circular contours or hand-drawn holes and convert them to true CAD circles with center marks and exact diameter.</p>
+                <p class="step-hint">Select a traced contour (or right-click it on canvas) to convert into standard CAD primitives.</p>
 
-                <div class="btn-group-row" style="margin-top: 10px;">
-                  <button id="btnFitAllCircles" class="btn btn-secondary btn-sm" title="Fit all near-circular shapes to true circles">
-                    ⭕ Auto-Fit Circles
+                <div class="btn-group-row" style="margin-top: 8px;">
+                  <button id="btnConvertSelectedCircle" class="btn btn-secondary btn-sm" title="Convert selected contour to Circle">
+                    ⭕ Circle
                   </button>
-                  <button id="btnConvertSelectedCircle" class="btn btn-outline btn-sm" title="Convert selected contour to circle">
-                    🎯 Convert Selected
+                  <button id="btnConvertSelectedSlot" class="btn btn-secondary btn-sm" title="Convert selected contour to Slot (Capsule)">
+                    💊 Slot (Capsule)
                   </button>
                 </div>
 
-                <div class="control-group" style="margin-top: 12px; margin-bottom: 8px;">
-                  <div class="label-row">
-                    <label for="sliderCircularity">Min Circularity Match</label>
-                    <span class="value-badge" id="valCircularity">60%</span>
+                <div style="margin-top: 10px;">
+                  <div style="font-size: 0.70rem; color: var(--text-dim); margin-bottom: 4px; font-weight: 700; text-transform: uppercase;">Convert to Line:</div>
+                  <div class="btn-group-row">
+                    <button id="btnConvertLineCenter" class="btn btn-outline btn-sm" title="Convert contour to Center Line">↔️ Center</button>
+                    <button id="btnConvertLineLeft" class="btn btn-outline btn-sm" title="Convert contour to Left Edge Line">⬅️ Left</button>
+                    <button id="btnConvertLineRight" class="btn btn-outline btn-sm" title="Convert contour to Right Edge Line">➡️ Right</button>
                   </div>
-                  <input type="range" id="sliderCircularity" min="40" max="95" step="5" value="60">
                 </div>
 
-                <div class="control-group toggle-group" style="margin-bottom: 0;">
-                  <label class="switch-label">
-                    <input type="checkbox" id="checkAutoCircle" checked>
-                    <span class="toggle-slider"></span>
-                    <span>Auto-detect circles on trace</span>
-                  </label>
+                <div id="rowResetContour" style="margin-top: 8px;">
+                  <button id="btnResetSelectedContour" class="btn btn-outline btn-sm btn-block" style="display: none; border-color: rgba(255,255,255,0.2); font-size: 0.73rem;" title="Restore back to original traced contour so you can re-fit or change alignment anytime">
+                    ↩️ Restore Original Contour
+                  </button>
                 </div>
+
+                <div style="margin-top: 8px; font-size: 0.72rem; color: var(--cad-cyan); background: rgba(6, 182, 212, 0.08); padding: 6px 8px; border-radius: 4px; border: 1px dashed rgba(6, 182, 212, 0.3);">
+                  💡 <strong>Tip:</strong> Right-click on any contour on the canvas to delete or convert!
+                </div>
+              </div>
+
+              <!-- Geometric Line Constraints Card -->
+              <div class="action-card" id="cardConstraints" style="margin-top: 14px;">
+                <div class="card-badge-title">
+                  <span class="mini-tag">⛓️ Geometric</span>
+                  <strong>CAD Line Constraints</strong>
+                </div>
+                <p class="step-hint">Force converted lines to be strictly parallel or perpendicular, or lock horizontal/vertical.</p>
+
+                <div class="btn-group-row" style="margin-top: 8px;">
+                  <button id="btnConstraintParallel" class="btn btn-secondary btn-sm" title="Force selected line to be parallel (//) with reference">
+                    // Parallel
+                  </button>
+                  <button id="btnConstraintPerp" class="btn btn-secondary btn-sm" title="Force selected line to be perpendicular (⊥) with reference">
+                    ⊥ Perpendic.
+                  </button>
+                </div>
+
+                <div class="btn-group-row" style="margin-top: 6px;">
+                  <button id="btnConstraintHorizontal" class="btn btn-outline btn-sm" title="Lock line to horizontal (0°)">
+                    — Horizontal
+                  </button>
+                  <button id="btnConstraintVertical" class="btn btn-outline btn-sm" title="Lock line to vertical (90°)">
+                    | Vertical
+                  </button>
+                </div>
+
+                <button id="btnConstraintClear" class="btn btn-outline btn-sm btn-block" style="margin-top: 6px; font-size: 0.72rem;" title="Reset line to its natural unconstrained angle">
+                  ✖️ Clear Constraints
+                </button>
               </div>
 
               <div class="stats-card" id="traceStatsCard">
@@ -352,6 +398,7 @@
                 </div>
                 <div class="btn-group-row" style="margin-top: 6px;">
                   <button id="btnCadDim" class="btn btn-outline btn-sm" title="Click 2 points to add engineering CAD dimension measurement">📐 Measure</button>
+                  <button id="btnCadDimCC" class="btn btn-outline btn-sm" title="Measure center-to-center distance between two circles">⭕-⭕ C-to-C</button>
                   <button id="btnManualPen" class="btn btn-outline btn-sm" title="Draw freeform polygon path">✏️ Path</button>
                   <button id="btnDeleteSelected" class="btn btn-outline btn-sm btn-danger" title="Delete currently selected shape">🗑️ Del</button>
                 </div>
@@ -458,9 +505,25 @@
                 <circle cx="12" cy="12" r="9" /><line x1="12" y1="9" x2="12" y2="15" /><line x1="9" y1="12" x2="15" y2="12" />
               </svg>
             </button>
-            <button id="toolCadDim" class="tool-btn" title="CAD Dimension Measurement">
+            <button id="toolCadDim" class="tool-btn" title="CAD Dimension Measurement (Click 2 Points, then Click to place Offset)">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M2 12h20M2 7l5 5-5 5M22 7l-5 5 5 5" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- History / Undo & Redo -->
+          <div class="tool-btn-group">
+            <button id="toolUndo" class="tool-btn" title="Undo (Ctrl+Z)" disabled>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 7v6h6M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+              </svg>
+            </button>
+            <button id="toolRedo" class="tool-btn" title="Redo (Ctrl+Y)" disabled>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 7v6h-6M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" />
               </svg>
             </button>
           </div>
@@ -549,6 +612,80 @@
           <button id="modalBtnCancel" class="btn btn-outline">Cancel</button>
           <button id="modalBtnConfirm" class="btn btn-primary">Confirm Scale</button>
         </div>
+      </div>
+    </div>
+
+    <!-- CAD Right-Click Context Menu -->
+    <div id="cadContextMenu" class="cad-context-menu">
+      <div id="ctxHeader" class="context-menu-submenu-title">CAD Element</div>
+      <div class="context-menu-item danger" id="ctxMenuDelete">
+        <span>🗑️</span>
+        <span>Delete Shape</span>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-submenu-title">CAD Primitive Fitting</div>
+      <div class="context-menu-item" id="ctxMenuCircle">
+        <span>⭕</span>
+        <span>Convert to Circle</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuSlot">
+        <span>💊</span>
+        <span>Convert to Slot (Capsule)</span>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-submenu-title">Convert to Line</div>
+      <div class="context-menu-item" id="ctxMenuLineCenter">
+        <span>↔️</span>
+        <span>Line: Center</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuLineLeft">
+        <span>⬅️</span>
+        <span>Line: Left Edge</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuLineRight">
+        <span>➡️</span>
+        <span>Line: Right Edge</span>
+      </div>
+      <div class="context-menu-divider" id="ctxResetDivider" style="display: none;"></div>
+      <div class="context-menu-item" id="ctxMenuResetContour" style="display: none;">
+        <span>↩️</span>
+        <span>Restore Original Contour</span>
+      </div>
+      <div class="context-menu-divider" id="ctxCircleDivider" style="display: none;"></div>
+      <div class="context-menu-item" id="ctxMenuMeasureCC" style="display: none;">
+        <span>📐</span>
+        <span>Measure from Center</span>
+      </div>
+      <div class="context-menu-divider" id="ctxConstraintDivider" style="display: none;"></div>
+      <div class="context-menu-submenu-title" id="ctxConstraintHeader" style="display: none;">Line Constraints</div>
+      <div class="context-menu-item" id="ctxMenuParallel" style="display: none;">
+        <span>⛓️</span>
+        <span>Make Parallel (//)</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuPerp" style="display: none;">
+        <span>📐</span>
+        <span>Make Perpendicular (⊥)</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuHorizontal" style="display: none;">
+        <span>—</span>
+        <span>Lock Horizontal</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuVertical" style="display: none;">
+        <span>|</span>
+        <span>Lock Vertical</span>
+      </div>
+      <div class="context-menu-item danger" id="ctxMenuDeleteDim" style="display: none;">
+        <span>🗑️</span>
+        <span>Delete Dimension</span>
+      </div>
+      <div class="context-menu-divider"></div>
+      <div class="context-menu-item" id="ctxMenuUndo">
+        <span>↩️</span>
+        <span>Undo (Ctrl+Z)</span>
+      </div>
+      <div class="context-menu-item" id="ctxMenuRedo">
+        <span>↪️</span>
+        <span>Redo (Ctrl+Y)</span>
       </div>
     </div>
 
