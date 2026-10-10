@@ -15,19 +15,27 @@ Since it runs entirely in the browser as a **Client-Side Single-Page Application
 ## ✨ Features & Capabilities
 
 - **100% Client-Side Processing**: No servers, no uploads, and no data tracking. Safe for confidential CAD models and functional offline.
-- **Image Input Support**:
-  - High-resolution flatbed scan imports (PNG, JPG, WebP, TIFF).
-  - Digital camera photos with perspective and contrast adjustment tools.
+- **Image Input & Pixel Editing**:
+  - High-resolution flatbed scan imports (A4 300/600 DPI presets).
+  - **🧹 Pixel Eraser & ✏️ Ink Pen**: Clean dust spots, eliminate scanner noise, or bridge broken pen lines directly on the pixel canvas before tracing.
+  - **✨ Despeckle Dust Cleaner**: Automatically cleans isolated single-pixel scanner artifacts.
 - **Accurate Scale Calibration**:
-  - Set real-world scale (mm / inches) using reference markings, grid paper, or known feature dimensions.
-- **Smart Edge Detection & Tracing**:
-  - Automated edge and contour tracing (thresholding, Canny edge detection, path vectorization).
-  - Manual and semi-automatic vector path editing (polyline, bezier curves, control points).
-  - Path smoothing and point decimation (Douglas-Peucker simplification).
+  - Scanner DPI presets (72, 150, 300, 600, 1200 DPI) with exact millimeter scaling (`px/mm`).
+  - Interactive 2-point reference calibration with live distance readout.
+- **Vector Contour Extraction**:
+  - Automated contour tracing with dark-ink / light-paper detection tuned for scans.
+  - Sub-pixel Douglas-Peucker path simplification and spline smoothing.
+  - **⭕ True Circle Recognition**: Automatic algebraic least-squares circle fitting (detects circular contours and converts to native circles with center crosshairs and diameter badges).
+- **CAD Geometry Editing & Dimensions**:
+  - **📏 CAD Line**: Draw precision calibrated lines with millimeter length tags.
+  - **⬛ CAD Rectangle**: Draw calibrated rectangular profiles.
+  - **⭕ CAD Circle**: Draw calibrated circles with center marks and diameter labels.
+  - **📐 CAD Dimensions & Measurements**: Click two points to place engineering dimension lines with extension witness lines, 45° architectural ticks, and millimeter value badges.
+  - **🗑️ Delete & Select**: Click any vector element to select, inspect, convert to circle, or delete.
 - **CAD & Vector Export**:
-  - **DXF (Drawing Exchange Format)**: Ready for import into AutoCAD, Fusion 360, SolidWorks, FreeCAD, LightBurn, or CNC/CAM software.
-  - **SVG**: For vector graphics editors (Inkscape, Illustrator) and laser cutters.
-  - **JSON**: Raw coordinate points and calibration metadata for automation pipelines.
+  - **AutoCAD DXF (R2000 / AC1015)**: Exports native `CIRCLE`, `LINE`, `LWPOLYLINE`, and calibrated `DIMENSIONS` layers.
+  - **Scalable Vector Graphics (SVG)**: Exports calibrated paths, circles, lines, and dimension annotations in physical millimeters (`mm`).
+  - **JSON**: Structured millimeter and pixel coordinates for robotic or CAM automation.
 
 ---
 
