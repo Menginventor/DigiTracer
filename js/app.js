@@ -31,27 +31,29 @@ class DigiTracerApp {
     // Tool mode: 'pan', 'calibrate', 'draw'
     this.activeMode = 'pan';
     
-    // Calibration state
+    // Calibration state: default to 300 DPI for standard flatbed scan
     this.calibration = {
       points: [],
-      ppm: 1.0, // pixels per mm (default uncalibrated: 1px = 1 unit)
+      dpi: 300,
+      ppm: 300 / 25.4, // 11.811 px/mm
       unit: 'mm',
-      isCalibrated: false
+      isCalibrated: true
     };
     
-    // Image filter settings
+    // Image filter settings tuned for scanned paper & ink lines
     this.filters = {
-      threshold: 128,
+      threshold: 205,
       contrast: 1.2,
       brightness: 0,
-      invert: false,
+      detectMode: 'dark-on-light',
+      ignoreBorder: true,
       showBinary: false
     };
     
     // Tracing & Vectors
     this.rawContours = [];
     this.vectorPaths = []; // Final paths in image space
-    this.minArea = 200;
+    this.minArea = 100;
     this.simplifyTolerance = 1.5;
     this.smoothSplines = false;
     
@@ -71,8 +73,8 @@ class DigiTracerApp {
     this.initDragDrop();
     this.resizeCanvas();
     
-    // Load initial sample scan
-    this.loadSampleScan();
+    // Load the user's test scan as default image
+    this.loadDefaultScan();
   }
 
   /* ----------------------------------------------------
@@ -104,12 +106,29 @@ class DigiTracerApp {
       }
     });
 
-    // Sample Scan Button
+    // Header Buttons
     document.getElementById('btnSampleScan').addEventListener('click', () => {
       this.loadSampleScan();
     });
 
+    const btnTestScan = document.getElementById('btnTestScan');
+    if (btnTestScan) {
+      btnTestScan.addEventListener('click', () => {
+        this.loadDefaultScan();
+      });
+    }
+
     // Image Adjustments
+    const selectDetectMode = document.getElementById('selectDetectMode');
+    if (selectDetectMode) {
+      selectDetectMode.addEventListener('change', (e) => {
+        this.filters.detectMode = e.target.value;
+        if (this.sourceImage) {
+          this.runAutoTrace();
+        }
+      });
+    }
+
     const sliderThreshold = document.getElementById('sliderThreshold');
     sliderThreshold.addEventListener('input', (e) => {
       this.filters.threshold = parseInt(e.target.value);
@@ -131,11 +150,15 @@ class DigiTracerApp {
       this.render();
     });
 
-    const checkInvert = document.getElementById('checkInvert');
-    checkInvert.addEventListener('change', (e) => {
-      this.filters.invert = e.target.checked;
-      this.render();
-    });
+    const checkIgnoreBorder = document.getElementById('checkIgnoreBorder');
+    if (checkIgnoreBorder) {
+      checkIgnoreBorder.addEventListener('change', (e) => {
+        this.filters.ignoreBorder = e.target.checked;
+        if (this.sourceImage) {
+          this.runAutoTrace();
+        }
+      });
+    }
 
     const checkBinaryPreview = document.getElementById('checkBinaryPreview');
     checkBinaryPreview.addEventListener('change', (e) => {
@@ -144,20 +167,58 @@ class DigiTracerApp {
     });
 
     document.getElementById('btnResetFilters').addEventListener('click', () => {
-      this.filters = { threshold: 128, contrast: 1.0, brightness: 0, invert: false, showBinary: false };
-      sliderThreshold.value = 128;
-      sliderContrast.value = 1.0;
+      this.filters = { threshold: 205, contrast: 1.2, brightness: 0, detectMode: 'dark-on-light', ignoreBorder: true, showBinary: false };
+      sliderThreshold.value = 205;
+      sliderContrast.value = 1.2;
       sliderBrightness.value = 0;
-      checkInvert.checked = false;
+      if (selectDetectMode) selectDetectMode.value = 'dark-on-light';
+      if (checkIgnoreBorder) checkIgnoreBorder.checked = true;
       checkBinaryPreview.checked = false;
-      document.getElementById('valThreshold').textContent = '128';
-      document.getElementById('valContrast').textContent = '1.0';
+      document.getElementById('valThreshold').textContent = '205';
+      document.getElementById('valContrast').textContent = '1.2';
       document.getElementById('valBrightness').textContent = '0';
-      this.render();
+      this.runAutoTrace();
       this.showToast('Image filters reset');
     });
 
-    // Calibration Controls
+    // Scanner DPI Calibration Controls
+    const inputDPI = document.getElementById('inputDPI');
+    const dpiPreview = document.getElementById('dpiScalePreview');
+
+    const updateDPIPreview = () => {
+      const dpiVal = parseFloat(inputDPI.value) || 300;
+      const calcPpm = dpiVal / 25.4;
+      if (dpiPreview) {
+        dpiPreview.textContent = `${calcPpm.toFixed(3)} px/mm (${dpiVal} DPI)`;
+      }
+    };
+
+    if (inputDPI) {
+      inputDPI.addEventListener('input', updateDPIPreview);
+    }
+
+    // DPI Preset Chips
+    document.querySelectorAll('.chip-btn').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('.chip-btn').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        if (inputDPI) {
+          inputDPI.value = chip.dataset.dpi;
+          updateDPIPreview();
+        }
+        this.applyDPIScale(parseFloat(chip.dataset.dpi));
+      });
+    });
+
+    const btnApplyDPI = document.getElementById('btnApplyDPI');
+    if (btnApplyDPI) {
+      btnApplyDPI.addEventListener('click', () => {
+        const dpiVal = parseFloat(inputDPI.value) || 300;
+        this.applyDPIScale(dpiVal);
+      });
+    }
+
+    // 2-Point Reference Calibration Controls
     document.getElementById('btnCalibrateTool').addEventListener('click', () => {
       this.startCalibrationMode();
     });
@@ -168,7 +229,7 @@ class DigiTracerApp {
       if (this.calibration.points.length === 2 && realLen > 0) {
         this.finishCalibration(realLen, unit);
       } else {
-        this.showToast('Please set 2 points first using calibration tool', true);
+        this.showToast('Please pick 2 points first using calibration tool', true);
       }
     });
 
@@ -512,6 +573,57 @@ class DigiTracerApp {
     reader.readAsDataURL(file);
   }
 
+  loadDefaultScan() {
+    const img = new Image();
+    img.onload = () => {
+      this.setImage(img);
+      // Flatbed scan is 300 DPI
+      this.applyDPIScale(300);
+      this.fitToScreen();
+      // Auto-trace ink lines
+      this.runAutoTrace();
+      this.showToast('User test scan loaded (300 DPI calibrated)');
+    };
+    img.onerror = () => {
+      // Fallback to test_scan.png or procedural sample
+      const fallbackImg = new Image();
+      fallbackImg.onload = () => {
+        this.setImage(fallbackImg);
+        this.applyDPIScale(150);
+        this.fitToScreen();
+        this.runAutoTrace();
+      };
+      fallbackImg.onerror = () => {
+        this.loadSampleScan();
+      };
+      fallbackImg.src = 'assets/test_scan.png';
+    };
+    img.src = 'assets/Scan_20261010.png';
+  }
+
+  applyDPIScale(dpi) {
+    this.calibration.dpi = dpi;
+    this.calibration.ppm = dpi / 25.4;
+    this.calibration.unit = 'mm';
+    this.calibration.isCalibrated = true;
+
+    const inputDPI = document.getElementById('inputDPI');
+    if (inputDPI) inputDPI.value = dpi;
+
+    document.querySelectorAll('.chip-btn').forEach(c => {
+      c.classList.toggle('active', parseFloat(c.dataset.dpi) === dpi);
+    });
+
+    const dpiPreview = document.getElementById('dpiScalePreview');
+    if (dpiPreview) {
+      dpiPreview.textContent = `${this.calibration.ppm.toFixed(3)} px/mm (${dpi} DPI)`;
+    }
+
+    this.updateCalibrationDisplay();
+    this.updateStats();
+    this.render();
+  }
+
   loadSampleScan() {
     const sampleCanvas = SampleGenerator.createSampleScan();
     const img = new Image();
@@ -519,6 +631,7 @@ class DigiTracerApp {
       this.setImage(img);
       // Auto calibrate to sample's reference: 200px = 50.0mm => 4.0 px/mm
       this.calibration.ppm = 4.0;
+      this.calibration.dpi = null;
       this.calibration.unit = 'mm';
       this.calibration.isCalibrated = true;
       this.calibration.points = [
@@ -574,6 +687,7 @@ class DigiTracerApp {
     if (unit === 'in') mmDist = realDistance * 25.4;
 
     this.calibration.ppm = pixelDist / mmDist;
+    this.calibration.dpi = Math.round(this.calibration.ppm * 25.4);
     this.calibration.unit = unit;
     this.calibration.isCalibrated = true;
 
@@ -590,12 +704,17 @@ class DigiTracerApp {
 
     if (this.calibration.isCalibrated) {
       indicator.classList.add('calibrated');
-      text.textContent = `Scale: 1 ${this.calibration.unit} = ${(this.calibration.ppm).toFixed(2)} px`;
-      infoScaleRatio.textContent = `${this.calibration.ppm.toFixed(3)} px/${this.calibration.unit}`;
+      const dpiSuffix = this.calibration.dpi ? ` (${this.calibration.dpi} DPI)` : '';
+      text.textContent = `Scale: 1 ${this.calibration.unit} = ${(this.calibration.ppm).toFixed(2)} px${dpiSuffix}`;
+      if (infoScaleRatio) {
+        infoScaleRatio.textContent = `${this.calibration.ppm.toFixed(3)} px/${this.calibration.unit}`;
+      }
     } else {
       indicator.classList.remove('calibrated');
       text.textContent = 'Scale: Uncalibrated (1 px = 1 unit)';
-      infoScaleRatio.textContent = '1.000 px/unit';
+      if (infoScaleRatio) {
+        infoScaleRatio.textContent = '1.000 px/unit';
+      }
     }
   }
 

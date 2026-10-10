@@ -11,34 +11,59 @@ const ImageTracer = {
   processToBinary(ctx, width, height, settings) {
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
-    const { threshold, contrast, brightness, invert } = settings;
+    const { threshold, contrast, brightness, detectMode, ignoreBorder } = settings;
 
     const binary = new Uint8Array(width * height);
     const factor = (259 * (contrast * 100 + 255)) / (255 * (259 - contrast * 100));
+    const borderMargin = ignoreBorder ? 8 : 0;
 
-    for (let i = 0; i < data.length; i += 4) {
-      // Perceptual grayscale formula
-      let r = data[i];
-      let g = data[i + 1];
-      let b = data[i + 2];
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const pixelIdx = y * width + x;
 
-      // Brightness & contrast
-      r = factor * (r - 128) + 128 + brightness;
-      g = factor * (g - 128) + 128 + brightness;
-      b = factor * (b - 128) + 128 + brightness;
+        // Scanner glass edge shadows filtering
+        if (ignoreBorder && (x < borderMargin || x >= width - borderMargin || y < borderMargin || y >= height - borderMargin)) {
+          binary[pixelIdx] = 0;
+          data[i] = 255;
+          data[i + 1] = 255;
+          data[i + 2] = 255;
+          continue;
+        }
 
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      let val = gray >= threshold ? 1 : 0;
-      if (invert) val = 1 - val;
+        let r = data[i];
+        let g = data[i + 1];
+        let b = data[i + 2];
 
-      const pixelIdx = i / 4;
-      binary[pixelIdx] = val;
+        // Brightness & contrast
+        r = factor * (r - 128) + 128 + brightness;
+        g = factor * (g - 128) + 128 + brightness;
+        b = factor * (b - 128) + 128 + brightness;
 
-      // Update image data for visual binary preview
-      const previewColor = val ? 255 : 0;
-      data[i] = previewColor;
-      data[i + 1] = previewColor;
-      data[i + 2] = previewColor;
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        let val = 0;
+        if (detectMode === 'dark-on-light' || detectMode === 'dark-object') {
+          // Scans: darker ink strokes on lighter paper
+          val = gray <= threshold ? 1 : 0;
+        } else {
+          // Light objects on dark mat
+          val = gray >= threshold ? 1 : 0;
+        }
+
+        binary[pixelIdx] = val;
+
+        // Visual mask preview (cyan tint for detected foreground)
+        if (val) {
+          data[i] = 0;
+          data[i + 1] = 240;
+          data[i + 2] = 255;
+        } else {
+          data[i] = 20;
+          data[i + 1] = 25;
+          data[i + 2] = 35;
+        }
+      }
     }
 
     return { binary, previewImageData: imgData };

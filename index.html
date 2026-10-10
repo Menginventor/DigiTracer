@@ -33,13 +33,22 @@
       <div class="header-actions">
         <div class="scale-indicator" id="scaleIndicator">
           <span class="indicator-dot"></span>
-          <span id="scaleStatusText">Scale: Uncalibrated (1 px = 1 unit)</span>
+          <span id="scaleStatusText">Scale: 300 DPI (11.81 px/mm)</span>
         </div>
+        <button id="btnTestScan" class="btn btn-secondary" title="Load user scanned test image">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
+          Load Test Scan
+        </button>
         <button id="btnSampleScan" class="btn btn-secondary" title="Load sample gasket part with reference scale">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
           </svg>
-          Load Sample Scan
+          Load Sample CAD
         </button>
         <label for="imageUploadInput" class="btn btn-primary" title="Upload scanned drawing or photo">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -67,15 +76,24 @@
           <!-- Tab 1: Image Processing -->
           <div class="tab-panel active" id="tab-prep">
             <div class="panel-section">
-              <h3>Image Adjustments</h3>
-              <p class="section-desc">Enhance edges and isolate the object from scan backgrounds.</p>
+              <h3>Image & Scan Adjustments</h3>
+              <p class="section-desc">Enhance pen lines, isolate scanned contours, and filter background paper texture.</p>
+
+              <div class="control-group">
+                <label for="selectDetectMode">Scan Contrast Mode</label>
+                <select id="selectDetectMode" class="form-select">
+                  <option value="dark-on-light" selected>Dark Ink / Lines on Light Paper (Scans)</option>
+                  <option value="dark-object">Solid Dark Object on Light BG</option>
+                  <option value="light-on-dark">Light Object on Dark Mat</option>
+                </select>
+              </div>
 
               <div class="control-group">
                 <div class="label-row">
-                  <label for="sliderThreshold">Binarize Threshold</label>
-                  <span class="value-badge" id="valThreshold">128</span>
+                  <label for="sliderThreshold">Detection Threshold</label>
+                  <span class="value-badge" id="valThreshold">205</span>
                 </div>
-                <input type="range" id="sliderThreshold" min="0" max="255" value="128">
+                <input type="range" id="sliderThreshold" min="0" max="255" value="205">
               </div>
 
               <div class="control-group">
@@ -96,9 +114,9 @@
 
               <div class="control-group toggle-group">
                 <label class="switch-label">
-                  <input type="checkbox" id="checkInvert">
+                  <input type="checkbox" id="checkIgnoreBorder" checked>
                   <span class="toggle-slider"></span>
-                  <span>Invert Colors (Dark Part / Light BG)</span>
+                  <span>Ignore Scanner Edge Shadow (8 px)</span>
                 </label>
               </div>
 
@@ -106,7 +124,7 @@
                 <label class="switch-label">
                   <input type="checkbox" id="checkBinaryPreview">
                   <span class="toggle-slider"></span>
-                  <span>Show Binary Edge Mask</span>
+                  <span>Show Binary Tracing Mask</span>
                 </label>
               </div>
 
@@ -118,41 +136,83 @@
           <div class="tab-panel" id="tab-calibrate">
             <div class="panel-section">
               <h3>Real-World Scale Calibration</h3>
-              <p class="section-desc">Click two known points on your scan (e.g. ruler markings or part width) to calibrate millimeters.</p>
+              <p class="section-desc">Set accurate physical CAD dimensions using scanner DPI or two reference points.</p>
 
-              <div class="action-card">
-                <button id="btnCalibrateTool" class="btn btn-primary btn-block">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M2 12h20M2 7l5 5-5 5M22 7l-5 5 5 5" />
-                  </svg>
-                  <span id="calibrateBtnText">Set 2 Calibration Points</span>
-                </button>
-                <div id="calibrationStepInfo" class="step-hint">Click the button, then click Point A and Point B on the canvas.</div>
-              </div>
-
-              <div class="calibration-settings" id="calibrationInputs" style="margin-top: 15px;">
-                <div class="control-group">
-                  <label for="inputRealLength">Real Distance</label>
+              <!-- Option A: Scanner DPI -->
+              <div class="action-card" style="margin-bottom: 16px;">
+                <div class="card-badge-title">
+                  <span class="mini-tag">Method A</span>
+                  <strong>Scanner DPI (Dots Per Inch)</strong>
+                </div>
+                <p class="step-hint">If your image is from a flatbed scanner, enter its scan resolution for automatic millimeter scaling.</p>
+                
+                <div class="control-group" style="margin-top: 10px;">
+                  <label for="inputDPI">Scanner Resolution (DPI)</label>
                   <div class="input-with-addon">
-                    <input type="number" id="inputRealLength" value="50.0" step="0.1" min="0.1">
-                    <select id="selectUnit">
-                      <option value="mm">mm</option>
-                      <option value="cm">cm</option>
-                      <option value="in">inch</option>
-                    </select>
+                    <input type="number" id="inputDPI" value="150" min="10" max="4800" step="1">
+                    <span class="input-unit-label">DPI</span>
                   </div>
                 </div>
 
-                <div class="info-row">
-                  <span class="info-label">Pixel Distance:</span>
-                  <span class="info-val" id="infoPixelDist">0 px</span>
-                </div>
-                <div class="info-row">
-                  <span class="info-label">Scale Ratio:</span>
-                  <span class="info-val" id="infoScaleRatio">1.000 px/mm</span>
+                <div class="dpi-chips">
+                  <button type="button" class="chip-btn" data-dpi="72">72</button>
+                  <button type="button" class="chip-btn" data-dpi="96">96</button>
+                  <button type="button" class="chip-btn active" data-dpi="150">150</button>
+                  <button type="button" class="chip-btn" data-dpi="300">300</button>
+                  <button type="button" class="chip-btn" data-dpi="600">600</button>
+                  <button type="button" class="chip-btn" data-dpi="1200">1200</button>
                 </div>
 
-                <button id="btnApplyCalibration" class="btn btn-secondary btn-block btn-sm" style="margin-top: 10px;">Apply Scale</button>
+                <div class="info-row" style="margin-top: 10px;">
+                  <span class="info-label">Calculated Scale:</span>
+                  <span class="info-val" id="dpiScalePreview">5.906 px/mm</span>
+                </div>
+
+                <button id="btnApplyDPI" class="btn btn-primary btn-block btn-sm" style="margin-top: 12px;">
+                  Apply Scanner DPI Scale
+                </button>
+              </div>
+
+              <!-- Option B: 2-Point Reference Measurement -->
+              <div class="action-card">
+                <div class="card-badge-title">
+                  <span class="mini-tag">Method B</span>
+                  <strong>2-Point Reference Calibration</strong>
+                </div>
+                <p class="step-hint">Click 2 known points (e.g. ruler markings or part width) on the canvas to calibrate.</p>
+
+                <button id="btnCalibrateTool" class="btn btn-secondary btn-block btn-sm" style="margin-top: 10px;">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M2 12h20M2 7l5 5-5 5M22 7l-5 5 5 5" />
+                  </svg>
+                  <span id="calibrateBtnText">Pick 2 Points on Canvas</span>
+                </button>
+                <div id="calibrationStepInfo" class="step-hint">Click button, then select Point A and Point B on the image.</div>
+
+                <div class="calibration-settings" id="calibrationInputs" style="margin-top: 12px;">
+                  <div class="control-group">
+                    <label for="inputRealLength">Real Distance</label>
+                    <div class="input-with-addon">
+                      <input type="number" id="inputRealLength" value="50.0" step="0.1" min="0.1">
+                      <select id="selectUnit">
+                        <option value="mm">mm</option>
+                        <option value="cm">cm</option>
+                        <option value="in">inch</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="info-row">
+                    <span class="info-label">Pixel Distance:</span>
+                    <span class="info-val" id="infoPixelDist">0 px</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">Scale Ratio:</span>
+                    <span class="info-val" id="infoScaleRatio">1.000 px/mm</span>
+                  </div>
+
+                  <button id="btnApplyCalibration" class="btn btn-secondary btn-block btn-sm" style="margin-top: 8px;">Apply 2-Point Scale</button>
+                </div>
               </div>
             </div>
           </div>
