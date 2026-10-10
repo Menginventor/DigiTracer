@@ -931,6 +931,7 @@ class DigiTracerApp {
           isCC,
           text: dimText
         };
+        this.dimPoints = []; // Hide first measurement preview line from mouse
         this.showToast(`Points set. Move mouse perpendicular & click 3rd time to place dimension.`);
         this.render();
       }
@@ -2692,7 +2693,7 @@ class DigiTracerApp {
     }
 
     // 4. Dimension placement point 1 preview (before point 2)
-    if (this.activeMode === 'cadDim' && this.dimPoints.length === 1 && this.mouseWorldPos) {
+    if ((this.activeMode === 'cadDim' || this.activeMode === 'cadDimCC') && this.dimPoints.length === 1 && !this.activeDimPlacement && this.mouseWorldPos) {
       const p1 = this.dimPoints[0];
       const p2 = this.activeSnapPoint || this.mouseWorldPos;
 

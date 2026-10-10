@@ -198,39 +198,38 @@ body {
   border-right: none !important;
 }
 
-/* Sidebar Toggle Floating Button */
+/* Sidebar Toggle Floating Button - Centered on Panel's Right Edge */
 .sidebar-toggle-btn {
   position: absolute;
-  top: 14px;
-  left: calc(var(--sidebar-width) - 14px);
-  width: 28px;
-  height: 28px;
+  top: 50%;
+  left: calc(var(--sidebar-width) - 12px);
+  transform: translateY(-50%);
+  width: 24px;
+  height: 54px;
   background: #ffffff;
   border: 1px solid #cbd5e1;
-  border-radius: 50%;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  border-radius: 0 12px 12px 0;
+  box-shadow: 2px 0 10px rgba(15, 23, 42, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 25;
   color: #475569;
-  transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1), transform 0.2s ease, background 0.15s ease, color 0.15s ease;
+  transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1), background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .sidebar-toggle-btn:hover {
   background: #f8fafc;
   color: var(--accent-color);
   border-color: var(--accent-color);
-  box-shadow: 0 4px 12px rgba(27, 106, 203, 0.25);
-  transform: scale(1.06);
+  box-shadow: 3px 0 14px rgba(27, 106, 203, 0.28);
 }
 
 .workspace.sidebar-collapsed .sidebar-toggle-btn {
-  left: 10px;
-  border-radius: var(--radius-sm);
-  width: 32px;
-  height: 32px;
+  left: 0;
+  border-radius: 0 12px 12px 0;
+  border-left: none;
 }
 
 .workspace.sidebar-collapsed .sidebar-toggle-btn svg {
