@@ -82,13 +82,18 @@ class DigiTracerApp {
     this.redoStack = [];
     this.maxHistory = 50;
 
+    // Marquee / Box Selection
+    this.isBoxSelecting = false;
+    this.boxSelectStart = null;
+    this.boxSelectCurrent = null;
+
     // Manual path drawing
     this.manualPath = [];
     
-    // Visibility layers
+    // Visibility layers (no grid by default for clean Onshape white)
     this.layers = {
       image: true,
-      grid: true,
+      grid: false,
       vectors: true,
       points: false
     };
@@ -535,6 +540,12 @@ class DigiTracerApp {
     const toolRedo = document.getElementById('toolRedo');
     if (toolRedo) toolRedo.addEventListener('click', () => this.redo());
 
+    // Collapsible Sidebar Toggle
+    const btnToggleSidebar = document.getElementById('btnToggleSidebar');
+    if (btnToggleSidebar) {
+      btnToggleSidebar.addEventListener('click', () => this.toggleSidebar());
+    }
+
     // Close context menu on external click
     window.addEventListener('click', (e) => {
       const menu = document.getElementById('cadContextMenu');
@@ -749,6 +760,21 @@ class DigiTracerApp {
     this.render();
   }
 
+  toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const workspace = document.querySelector('.workspace');
+    if (!sidebar || !workspace) return;
+    const isCollapsed = sidebar.classList.toggle('collapsed');
+    workspace.classList.toggle('sidebar-collapsed', isCollapsed);
+    this.resizeCanvas();
+    this.render();
+    setTimeout(() => {
+      this.resizeCanvas();
+      this.render();
+    }, 240);
+    this.showToast(isCollapsed ? 'Sidebar collapsed (Alt+S to restore)' : 'Sidebar expanded');
+  }
+
   initCanvasEvents() {
     this.canvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
     this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
@@ -768,6 +794,9 @@ class DigiTracerApp {
       } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
         e.preventDefault();
         this.redo();
+      } else if ((e.altKey && (e.key === 's' || e.key === 'S')) || e.key === '[') {
+        e.preventDefault();
+        this.toggleSidebar();
       } else if (e.key === 'f' || e.key === 'F') {
         this.fitToScreen();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -927,8 +956,16 @@ class DigiTracerApp {
       }
     }
 
-    // 7. Pan canvas with middle button or left click in pan/select mode
-    if (e.button === 1 || (e.button === 0 && (this.activeMode === 'pan' || this.activeMode === 'select'))) {
+    // 7. Select Mode OR Shift/Ctrl Drag: Box / Marquee Selection
+    if (e.button === 0 && (this.activeMode === 'select' || e.shiftKey || e.ctrlKey)) {
+      this.isBoxSelecting = true;
+      this.boxSelectStart = { x: worldPt.x, y: worldPt.y, clientX: e.clientX, clientY: e.clientY };
+      this.boxSelectCurrent = { x: worldPt.x, y: worldPt.y };
+      return;
+    }
+
+    // 8. Pan canvas with middle button or left click in pan mode
+    if (e.button === 1 || (e.button === 0 && this.activeMode === 'pan')) {
       this.view.isPanning = true;
       this.view.startX = e.clientX - this.view.x;
       this.view.startY = e.clientY - this.view.y;
@@ -975,6 +1012,13 @@ class DigiTracerApp {
     // Pixel Painting Drag
     if (this.isPainting && (this.activeMode === 'pixelEraser' || this.activeMode === 'pixelBrush')) {
       this.paintPixelAt(worldPt.x, worldPt.y);
+      return;
+    }
+
+    // Selection Marquee Drag Preview
+    if (this.isBoxSelecting && this.boxSelectStart) {
+      this.boxSelectCurrent = worldPt;
+      this.render();
       return;
     }
 
@@ -1176,6 +1220,74 @@ class DigiTracerApp {
       return;
     }
 
+    // Selection Marquee Complete or Single Click
+    if (this.isBoxSelecting && this.boxSelectStart) {
+      const screenMoved = Math.hypot(e.clientX - this.boxSelectStart.clientX, e.clientY - this.boxSelectStart.clientY);
+      if (screenMoved < 6) {
+        // Single Click Selection
+        const hitDim = this.findDimensionAtPoint(worldPt);
+        if (hitDim) {
+          this.selectedDimensionId = hitDim.id;
+          this.selectedContourIndex = -1;
+          this.selectedContourIndices.clear();
+          this.updateDimensionsUI();
+          this.render();
+          this.showToast(`Selected Measurement: ${hitDim.text} (Delete or drag offset)`);
+        } else {
+          const clickedIdx = this.findContourAtPoint(worldPt);
+          if (e.shiftKey || e.ctrlKey) {
+            if (clickedIdx !== -1) {
+              if (this.selectedContourIndices.has(clickedIdx)) {
+                this.selectedContourIndices.delete(clickedIdx);
+                this.selectedContourIndex = this.selectedContourIndices.size > 0 
+                  ? Array.from(this.selectedContourIndices)[this.selectedContourIndices.size - 1] 
+                  : -1;
+              } else {
+                this.selectedContourIndices.add(clickedIdx);
+                this.selectedContourIndex = clickedIdx;
+              }
+            }
+          } else {
+            this.selectedContourIndices.clear();
+            if (clickedIdx !== -1) {
+              this.selectedContourIndices.add(clickedIdx);
+              this.selectedContourIndex = clickedIdx;
+            } else {
+              this.selectedContourIndex = -1;
+              this.selectedDimensionId = null;
+            }
+          }
+          this.handleSelectionFeedback();
+        }
+      } else {
+        // Marquee Box Selection
+        const minX = Math.min(this.boxSelectStart.x, this.boxSelectCurrent.x);
+        const maxX = Math.max(this.boxSelectStart.x, this.boxSelectCurrent.x);
+        const minY = Math.min(this.boxSelectStart.y, this.boxSelectCurrent.y);
+        const maxY = Math.max(this.boxSelectStart.y, this.boxSelectCurrent.y);
+
+        if (!e.shiftKey && !e.ctrlKey) {
+          this.selectedContourIndices.clear();
+        }
+        let added = 0;
+        this.vectorPaths.forEach((path, idx) => {
+          if (this.isPathInBox(path, minX, maxX, minY, maxY)) {
+            this.selectedContourIndices.add(idx);
+            this.selectedContourIndex = idx;
+            added++;
+          }
+        });
+        this.handleSelectionFeedback();
+      }
+
+      this.isBoxSelecting = false;
+      this.boxSelectStart = null;
+      this.boxSelectCurrent = null;
+      this.canvas.style.cursor = 'crosshair';
+      this.render();
+      return;
+    }
+
     // Canvas Pan & Selection click
     if (this.view.isPanning) {
       this.view.isPanning = false;
@@ -1201,10 +1313,13 @@ class DigiTracerApp {
           if (clickedIdx !== -1) {
             if (this.selectedContourIndices.has(clickedIdx)) {
               this.selectedContourIndices.delete(clickedIdx);
+              this.selectedContourIndex = this.selectedContourIndices.size > 0 
+                ? Array.from(this.selectedContourIndices)[this.selectedContourIndices.size - 1] 
+                : -1;
             } else {
               this.selectedContourIndices.add(clickedIdx);
+              this.selectedContourIndex = clickedIdx;
             }
-            this.selectedContourIndex = clickedIdx;
           }
         } else {
           this.selectedContourIndices.clear();
@@ -1216,31 +1331,7 @@ class DigiTracerApp {
             this.selectedDimensionId = null;
           }
         }
-
-        if (clickedIdx !== -1) {
-          const path = this.vectorPaths[clickedIdx];
-          const ppm = this.calibration.ppm || 1;
-          const multiMsg = this.selectedContourIndices.size > 1 ? ` (${this.selectedContourIndices.size} selected)` : '';
-          if (path.isCircle) {
-            const diaMM = (path.diameter / ppm).toFixed(1);
-            this.showToast(`Selected Circle ⭕ (⌀${diaMM} mm)${multiMsg}`);
-          } else if (path.isSlot) {
-            const slotL = ((path.slotLength || path.lengthVal || 0) / ppm).toFixed(1);
-            const slotW = ((path.slotWidth || path.width || 0) / ppm).toFixed(1);
-            this.showToast(`Selected Slot 💊 (${slotL} × ${slotW} mm)${multiMsg}`);
-          } else if (path.isLine) {
-            const mmLen = (Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y) / ppm).toFixed(1);
-            const constrStr = path.constraint ? ` [${path.constraint.symbol}]` : '';
-            this.showToast(`Selected Line (${mmLen} mm)${constrStr}${multiMsg}`);
-          } else {
-            const circ = Math.round(ImageTracer.calculateCircularity(path) * 100);
-            this.showToast(`Selected Shape (Circularity: ${circ}%)${multiMsg}`);
-          }
-        } else {
-          this.selectedDimensionId = null;
-        }
-        this.updateDimensionsUI();
-        this.render();
+        this.handleSelectionFeedback();
       }
     }
   }
@@ -1541,6 +1632,7 @@ class DigiTracerApp {
 
   convertAllNearCircularToCircles() {
     let count = 0;
+    this.saveState('Convert All Circles');
     this.vectorPaths = this.vectorPaths.map(path => {
       const orig = path.originalPoints || path;
       const circ = ImageTracer.calculateCircularity(orig);
@@ -1586,6 +1678,7 @@ class DigiTracerApp {
     const orig = this.getOriginalContour(path) || path;
     const fitted = ImageTracer.fitCircle(orig);
     if (fitted) {
+      this.saveState('Convert to Circle');
       fitted.originalContour = orig;
       fitted.originalPoints = orig;
       this.vectorPaths[this.selectedContourIndex] = fitted;
@@ -1611,6 +1704,7 @@ class DigiTracerApp {
     const orig = this.getOriginalContour(path) || path;
     const fitted = ImageTracer.fitSlot(orig);
     if (fitted) {
+      this.saveState('Convert to Slot');
       fitted.originalContour = orig;
       fitted.originalPoints = orig;
       this.vectorPaths[this.selectedContourIndex] = fitted;
@@ -1640,6 +1734,7 @@ class DigiTracerApp {
     const orig = this.getOriginalContour(path) || path;
     const fitted = ImageTracer.fitLine(orig, alignment);
     if (fitted) {
+      this.saveState(`Convert to ${alignment} Line`);
       fitted.originalContour = orig;
       fitted.originalPoints = orig;
       fitted.alignment = alignment;
@@ -1666,6 +1761,7 @@ class DigiTracerApp {
       this.showToast('Selected shape is already an original contour', true);
       return;
     }
+    this.saveState('Restore Original Contour');
     const restored = orig.map(pt => ({ x: pt.x, y: pt.y }));
     restored.originalPoints = orig;
     restored.originalContour = orig;
@@ -1729,17 +1825,43 @@ class DigiTracerApp {
   onContextMenu(e) {
     e.preventDefault();
     const worldPt = this.clientToWorld(e.clientX, e.clientY);
+    const hitDim = this.findDimensionAtPoint(worldPt);
     const hitIdx = this.findContourAtPoint(worldPt);
-
     const menu = document.getElementById('cadContextMenu');
     if (!menu) return;
 
+    const btnDeleteDim = document.getElementById('ctxMenuDeleteDim');
+    const header = document.getElementById('ctxHeader');
+    const btnDelete = document.getElementById('ctxMenuDelete');
+
+    if (hitDim) {
+      this.selectedDimensionId = hitDim.id;
+      this.render();
+      if (header) header.textContent = `📐 ${hitDim.text}`;
+      if (btnDeleteDim) btnDeleteDim.style.display = 'flex';
+      if (btnDelete) btnDelete.style.display = 'none';
+      ['ctxMenuCircle', 'ctxMenuSlot', 'ctxMenuLineCenter', 'ctxMenuLineLeft', 'ctxMenuLineRight', 'ctxMenuResetContour', 'ctxResetDivider', 'ctxMenuMeasureCC', 'ctxCircleDivider', 'ctxConstraintDivider', 'ctxConstraintHeader', 'ctxMenuParallel', 'ctxMenuPerp', 'ctxMenuHorizontal', 'ctxMenuVertical'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+      menu.style.left = `${Math.min(window.innerWidth - 215, e.clientX)}px`;
+      menu.style.top = `${Math.min(window.innerHeight - 280, e.clientY)}px`;
+      menu.classList.add('active');
+      return;
+    }
+
+    if (btnDeleteDim) btnDeleteDim.style.display = 'none';
+    if (btnDelete) btnDelete.style.display = 'flex';
+
     if (hitIdx !== -1) {
       this.selectedContourIndex = hitIdx;
+      if (!this.selectedContourIndices.has(hitIdx)) {
+        this.selectedContourIndices.clear();
+        this.selectedContourIndices.add(hitIdx);
+      }
       const path = this.vectorPaths[hitIdx];
       this.render();
 
-      const header = document.getElementById('ctxHeader');
       if (header) {
         if (path.isCircle) header.textContent = '⭕ Circle Element';
         else if (path.isSlot) header.textContent = '💊 Slot Element';
@@ -1764,7 +1886,6 @@ class DigiTracerApp {
       if (btnCircle) btnCircle.style.display = path.isCircle ? 'none' : 'flex';
       if (btnSlot) btnSlot.style.display = path.isSlot ? 'none' : 'flex';
 
-      // Keep Line alignments accessible so user can change alignment later!
       if (btnLineC) {
         btnLineC.style.display = 'flex';
         const isCenter = path.isLine && (path.alignment === 'center' || !path.alignment);
@@ -1789,6 +1910,23 @@ class DigiTracerApp {
 
       if (btnMeasureCC) btnMeasureCC.style.display = path.isCircle ? 'flex' : 'none';
       if (dividerCC) dividerCC.style.display = path.isCircle ? 'block' : 'none';
+
+      // Line Constraints in Context Menu
+      const isLine = !!path.isLine;
+      const numLines = this.getSelectedLineIndices().length;
+      const cDivider = document.getElementById('ctxConstraintDivider');
+      const cHeader = document.getElementById('ctxConstraintHeader');
+      const mParallel = document.getElementById('ctxMenuParallel');
+      const mPerp = document.getElementById('ctxMenuPerp');
+      const mHoriz = document.getElementById('ctxMenuHorizontal');
+      const mVert = document.getElementById('ctxMenuVertical');
+
+      if (cDivider) cDivider.style.display = isLine ? 'block' : 'none';
+      if (cHeader) cHeader.style.display = isLine ? 'block' : 'none';
+      if (mParallel) mParallel.style.display = isLine && numLines >= 2 ? 'flex' : 'none';
+      if (mPerp) mPerp.style.display = isLine && numLines >= 2 ? 'flex' : 'none';
+      if (mHoriz) mHoriz.style.display = isLine ? 'flex' : 'none';
+      if (mVert) mVert.style.display = isLine ? 'flex' : 'none';
 
       menu.style.left = `${Math.min(window.innerWidth - 215, e.clientX)}px`;
       menu.style.top = `${Math.min(window.innerHeight - 280, e.clientY)}px`;
@@ -1860,6 +1998,60 @@ class DigiTracerApp {
       }
     }
     return bestIdx;
+  }
+
+  isPathInBox(path, minX, maxX, minY, maxY) {
+    if (!path) return false;
+    if (path.isCircle) {
+      return (path.cx >= minX && path.cx <= maxX && path.cy >= minY && path.cy <= maxY) ||
+             (path.cx + path.radius >= minX && path.cx - path.radius <= maxX &&
+              path.cy + path.radius >= minY && path.cy - path.radius <= maxY);
+    }
+    if (path.isSlot) {
+      return (path.cx >= minX && path.cx <= maxX && path.cy >= minY && path.cy <= maxY) ||
+             (path.c1 && path.c1.x >= minX && path.c1.x <= maxX && path.c1.y >= minY && path.c1.y <= maxY);
+    }
+    if (path.isLine && path.length >= 2) {
+      return (path[0].x >= minX && path[0].x <= maxX && path[0].y >= minY && path[0].y <= maxY) ||
+             (path[1].x >= minX && path[1].x <= maxX && path[1].y >= minY && path[1].y <= maxY);
+    }
+    for (let i = 0; i < path.length; i++) {
+      if (path[i].x >= minX && path[i].x <= maxX && path[i].y >= minY && path[i].y <= maxY) return true;
+    }
+    return false;
+  }
+
+  handleSelectionFeedback() {
+    const count = this.selectedContourIndices.size;
+    if (count > 1) {
+      const lines = this.getSelectedLineIndices();
+      const lineMsg = lines.length >= 2 ? ` (${lines.length} lines: // or ⊥ ready)` : '';
+      this.showToast(`${count} CAD Elements Selected (Hold Shift to add/remove)${lineMsg}`);
+    } else if (count === 1) {
+      const idx = Array.from(this.selectedContourIndices)[0];
+      const path = this.vectorPaths[idx];
+      const ppm = this.calibration.ppm || 1;
+      if (path.isCircle) {
+        const diaMM = (path.diameter / ppm).toFixed(1);
+        this.showToast(`Selected Circle ⭕ (⌀${diaMM} mm)`);
+      } else if (path.isSlot) {
+        const slotL = ((path.slotLength || path.lengthVal || 0) / ppm).toFixed(1);
+        const slotW = ((path.slotWidth || path.width || 0) / ppm).toFixed(1);
+        this.showToast(`Selected Slot 💊 (${slotL} × ${slotW} mm)`);
+      } else if (path.isLine) {
+        const mmLen = (Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y) / ppm).toFixed(1);
+        const constrStr = path.constraint ? ` [${path.constraint.symbol}]` : '';
+        this.showToast(`Selected Line (${mmLen} mm)${constrStr}`);
+      } else {
+        const circ = Math.round(ImageTracer.calculateCircularity(path) * 100);
+        this.showToast(`Selected Shape (Circularity: ${circ}%)`);
+      }
+    } else {
+      this.selectedDimensionId = null;
+    }
+    this.updateDimensionsUI();
+    this.updateStats();
+    this.render();
   }
 
   updateStats() {
@@ -1952,6 +2144,22 @@ class DigiTracerApp {
     // 8. Pixel brush / eraser ring indicator
     this.renderBrushCursor();
 
+    // 9. Marquee Selection Box
+    if (this.isBoxSelecting && this.boxSelectStart && this.boxSelectCurrent) {
+      const bx = Math.min(this.boxSelectStart.x, this.boxSelectCurrent.x);
+      const by = Math.min(this.boxSelectStart.y, this.boxSelectCurrent.y);
+      const bw = Math.abs(this.boxSelectCurrent.x - this.boxSelectStart.x);
+      const bh = Math.abs(this.boxSelectCurrent.y - this.boxSelectStart.y);
+      this.ctx.save();
+      this.ctx.fillStyle = 'rgba(27, 106, 203, 0.12)';
+      this.ctx.strokeStyle = '#1b6acb';
+      this.ctx.lineWidth = 1.2 / this.view.scale;
+      this.ctx.setLineDash([4 / this.view.scale, 3 / this.view.scale]);
+      this.ctx.fillRect(bx, by, bw, bh);
+      this.ctx.strokeRect(bx, by, bw, bh);
+      this.ctx.restore();
+    }
+
     this.ctx.restore();
     this.updateConvertButtonsState();
   }
@@ -2042,7 +2250,7 @@ class DigiTracerApp {
 
     this.vectorPaths.forEach((path, idx) => {
       if (!path) return;
-      const isSelected = this.selectedContourIndex === idx;
+      const isSelected = (this.selectedContourIndices && this.selectedContourIndices.has(idx)) || this.selectedContourIndex === idx;
 
       // Ghost overlay of underlying original contour when a fitted primitive is selected
       if (isSelected && (path.isLine || path.isCircle || path.isSlot)) {
@@ -2204,7 +2412,8 @@ class DigiTracerApp {
         // Line Length badge when selected with BLACK text
         if (isSelected) {
           const lineLenMM = (Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y) / ppm).toFixed(1);
-          const lineStr = `Line: ${lineLenMM} ${this.calibration.unit}`;
+          const constrSuffix = path.constraint && path.constraint.symbol ? ` [${path.constraint.symbol}]` : '';
+          const lineStr = `Line: ${lineLenMM} ${this.calibration.unit}${constrSuffix}`;
           const fontSize = Math.max(10, 11 / this.view.scale);
           this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
           const midX = (path[0].x + path[1].x) / 2;
@@ -2223,6 +2432,25 @@ class DigiTracerApp {
           this.ctx.fillText(lineStr, midX, midY);
           this.ctx.textAlign = 'start';
           this.ctx.textBaseline = 'alphabetic';
+        } else if (path.constraint && path.constraint.symbol) {
+          // Render constraint relation badge even when line is not selected
+          const midX = (path[0].x + path[1].x) / 2;
+          const midY = (path[0].y + path[1].y) / 2;
+          const badgeR = 8 / this.view.scale;
+          this.ctx.save();
+          this.ctx.fillStyle = '#ffffff';
+          this.ctx.strokeStyle = '#1b6acb';
+          this.ctx.lineWidth = 1.2 / this.view.scale;
+          this.ctx.beginPath();
+          this.ctx.arc(midX, midY, badgeR, 0, Math.PI * 2);
+          this.ctx.fill();
+          this.ctx.stroke();
+          this.ctx.fillStyle = '#1b6acb';
+          this.ctx.font = `bold ${Math.max(10, 11 / this.view.scale)}px sans-serif`;
+          this.ctx.textAlign = 'center';
+          this.ctx.textBaseline = 'middle';
+          this.ctx.fillText(path.constraint.symbol, midX, midY);
+          this.ctx.restore();
         }
 
         if (this.layers.points || isSelected) {
@@ -2703,6 +2931,22 @@ class DigiTracerApp {
   }
 
   deleteSelectedContour() {
+    if (this.selectedContourIndices && this.selectedContourIndices.size > 0) {
+      this.saveState('Delete Shapes');
+      const toDelete = Array.from(this.selectedContourIndices).sort((a, b) => b - a);
+      toDelete.forEach(idx => {
+        if (idx >= 0 && idx < this.vectorPaths.length) {
+          this.vectorPaths.splice(idx, 1);
+        }
+      });
+      const count = toDelete.length;
+      this.selectedContourIndex = -1;
+      this.selectedContourIndices.clear();
+      this.updateStats();
+      this.render();
+      this.showToast(`Deleted ${count} CAD element(s)`);
+      return;
+    }
     if (this.selectedContourIndex >= 0 && this.selectedContourIndex < this.vectorPaths.length) {
       this.saveState('Delete Shape');
       this.vectorPaths.splice(this.selectedContourIndex, 1);
@@ -3229,6 +3473,7 @@ class DigiTracerApp {
     return this.dimensions.map(dim => ({
       p1: { x: dim.p1.x / ppm, y: dim.p1.y / ppm },
       p2: { x: dim.p2.x / ppm, y: dim.p2.y / ppm },
+      offset: (dim.offset || 0) / ppm,
       mmDist: dim.mmDist,
       text: dim.text
     }));
@@ -3304,15 +3549,26 @@ class DigiTracerApp {
     let pathsMarkup = '';
     mmPaths.forEach((path, idx) => {
       if (!path) return;
-      const stroke = idx === 0 ? '#00f0ff' : '#f59e0b';
+      const stroke = idx === 0 ? '#1b6acb' : '#0284c7';
 
       if (path.isCircle) {
         pathsMarkup += `  <circle cx="${path.cx.toFixed(3)}" cy="${path.cy.toFixed(3)}" r="${path.radius.toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
         return;
       }
 
+      if (path.isSlot && path.c1 && path.c2) {
+        let d = `M ${path[0].x.toFixed(3)} ${path[0].y.toFixed(3)}`;
+        for (let i = 1; i < path.length; i++) {
+          d += ` L ${path[i].x.toFixed(3)} ${path[i].y.toFixed(3)}`;
+        }
+        d += ' Z';
+        pathsMarkup += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
+        pathsMarkup += `  <line x1="${path.c1.x.toFixed(3)}" y1="${path.c1.y.toFixed(3)}" x2="${path.c2.x.toFixed(3)}" y2="${path.c2.y.toFixed(3)}" stroke="#64748b" stroke-width="0.2" stroke-dasharray="1.5,1.5" />\n`;
+        return;
+      }
+
       if (path.isLine && path.length >= 2) {
-        pathsMarkup += `  <line x1="${path[0].x.toFixed(3)}" y1="${path[0].y.toFixed(3)}" x2="${path[1].x.toFixed(3)}" y2="${path[1].y.toFixed(3)}" stroke="#10b981" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
+        pathsMarkup += `  <line x1="${path[0].x.toFixed(3)}" y1="${path[0].y.toFixed(3)}" x2="${path[1].x.toFixed(3)}" y2="${path[1].y.toFixed(3)}" stroke="#059669" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
         return;
       }
 
@@ -3330,10 +3586,28 @@ class DigiTracerApp {
     if (mmDims.length > 0) {
       dimsMarkup += '  <g id="dimensions">\n';
       mmDims.forEach(dim => {
-        dimsMarkup += `    <line x1="${dim.p1.x.toFixed(3)}" y1="${dim.p1.y.toFixed(3)}" x2="${dim.p2.x.toFixed(3)}" y2="${dim.p2.y.toFixed(3)}" stroke="#ec4899" stroke-width="0.25" stroke-dasharray="1,1" />\n`;
-        const midX = (dim.p1.x + dim.p2.x) / 2;
-        const midY = (dim.p1.y + dim.p2.y) / 2;
-        dimsMarkup += `    <text x="${midX.toFixed(3)}" y="${(midY - 0.8).toFixed(3)}" font-size="2.2" fill="#ec4899" text-anchor="middle" font-family="sans-serif">${dim.text}</text>\n`;
+        const p1 = dim.p1;
+        const p2 = dim.p2;
+        const offset = dim.offset || 0;
+        let p1Line = p1;
+        let p2Line = p2;
+        if (Math.abs(offset) > 0.001) {
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 0.001) {
+            const nx = -dy / dist;
+            const ny = dx / dist;
+            p1Line = { x: p1.x + offset * nx, y: p1.y + offset * ny };
+            p2Line = { x: p2.x + offset * nx, y: p2.y + offset * ny };
+            dimsMarkup += `    <line x1="${p1.x.toFixed(3)}" y1="${p1.y.toFixed(3)}" x2="${p1Line.x.toFixed(3)}" y2="${p1Line.y.toFixed(3)}" stroke="#94a3b8" stroke-width="0.15" />\n`;
+            dimsMarkup += `    <line x1="${p2.x.toFixed(3)}" y1="${p2.y.toFixed(3)}" x2="${p2Line.x.toFixed(3)}" y2="${p2Line.y.toFixed(3)}" stroke="#94a3b8" stroke-width="0.15" />\n`;
+          }
+        }
+        dimsMarkup += `    <line x1="${p1Line.x.toFixed(3)}" y1="${p1Line.y.toFixed(3)}" x2="${p2Line.x.toFixed(3)}" y2="${p2Line.y.toFixed(3)}" stroke="#ea580c" stroke-width="0.25" stroke-dasharray="1,1" />\n`;
+        const midX = (p1Line.x + p2Line.x) / 2;
+        const midY = (p1Line.y + p2Line.y) / 2;
+        dimsMarkup += `    <text x="${midX.toFixed(3)}" y="${(midY - 0.8).toFixed(3)}" font-size="2.2" fill="#0f172a" text-anchor="middle" font-family="sans-serif">${dim.text}</text>\n`;
       });
       dimsMarkup += '  </g>\n';
     }
