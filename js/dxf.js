@@ -64,7 +64,24 @@ const DXFGenerator = {
     dxf += '2\nENTITIES\n';
 
     paths.forEach((path) => {
-      if (!path || path.length < 2) return;
+      if (!path) return;
+
+      // Native AutoCAD Circle Entity
+      if (path.isCircle && path.cx !== undefined && path.cy !== undefined && path.radius !== undefined) {
+        dxf += '0\nCIRCLE\n';
+        dxf += '5\n' + nextHandle() + '\n';
+        dxf += '100\nAcDbEntity\n';
+        dxf += '8\n' + layerName + '\n';
+        dxf += '62\n4\n'; // Cyan
+        dxf += '100\nAcDbCircle\n';
+        dxf += '10\n' + path.cx.toFixed(4) + '\n';
+        dxf += '20\n' + (-path.cy).toFixed(4) + '\n';
+        dxf += '30\n0.0000\n';
+        dxf += '40\n' + path.radius.toFixed(4) + '\n';
+        return;
+      }
+
+      if (path.length < 2) return;
 
       const vertexCount = path.length;
       dxf += '0\nLWPOLYLINE\n';

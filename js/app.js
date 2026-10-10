@@ -56,6 +56,11 @@ class DigiTracerApp {
     this.minArea = 100;
     this.simplifyTolerance = 1.5;
     this.smoothSplines = false;
+
+    // Circle Recognition state
+    this.autoCircle = true;
+    this.minCircularity = 0.60;
+    this.selectedContourIndex = -1;
     
     // Manual path drawing
     this.manualPath = [];
@@ -276,6 +281,42 @@ class DigiTracerApp {
       this.render();
     });
 
+    // Circle Recognition Controls
+    const sliderCircularity = document.getElementById('sliderCircularity');
+    if (sliderCircularity) {
+      sliderCircularity.addEventListener('input', (e) => {
+        this.minCircularity = parseInt(e.target.value) / 100;
+        document.getElementById('valCircularity').textContent = `${e.target.value}%`;
+        if (this.autoCircle && this.rawContours.length > 0) {
+          this.updateSimplifiedPaths();
+          this.render();
+        }
+      });
+    }
+
+    const checkAutoCircle = document.getElementById('checkAutoCircle');
+    if (checkAutoCircle) {
+      checkAutoCircle.addEventListener('change', (e) => {
+        this.autoCircle = e.target.checked;
+        this.updateSimplifiedPaths();
+        this.render();
+      });
+    }
+
+    const btnFitAllCircles = document.getElementById('btnFitAllCircles');
+    if (btnFitAllCircles) {
+      btnFitAllCircles.addEventListener('click', () => {
+        this.convertAllNearCircularToCircles();
+      });
+    }
+
+    const btnConvertSelectedCircle = document.getElementById('btnConvertSelectedCircle');
+    if (btnConvertSelectedCircle) {
+      btnConvertSelectedCircle.addEventListener('click', () => {
+        this.convertSelectedContourToCircle();
+      });
+    }
+
     document.getElementById('btnClearPaths').addEventListener('click', () => {
       this.rawContours = [];
       this.vectorPaths = [];
@@ -413,6 +454,7 @@ class DigiTracerApp {
 
   onMouseDown(e) {
     const worldPt = this.clientToWorld(e.clientX, e.clientY);
+    this.mouseDownPos = { x: e.clientX, y: e.clientY };
 
     // Pan canvas with middle button or left click in pan mode
     if (e.button === 1 || (e.button === 0 && this.activeMode === 'pan')) {
@@ -483,6 +525,25 @@ class DigiTracerApp {
     if (this.view.isPanning) {
       this.view.isPanning = false;
       this.canvas.style.cursor = 'crosshair';
+
+      // If mouse barely moved, treat as a selection click
+      if (this.mouseDownPos && Math.hypot(e.clientX - this.mouseDownPos.x, e.clientY - this.mouseDownPos.y) < 6) {
+        const worldPt = this.clientToWorld(e.clientX, e.clientY);
+        const clickedIdx = this.findContourAtPoint(worldPt);
+        this.selectedContourIndex = clickedIdx;
+        if (clickedIdx !== -1) {
+          const path = this.vectorPaths[clickedIdx];
+          const ppm = this.calibration.ppm || 1;
+          if (path.isCircle) {
+            const diaMM = (path.diameter / ppm).toFixed(1);
+            this.showToast(`Selected Circle ⭕ (⌀${diaMM} mm)`);
+          } else {
+            const circ = Math.round(ImageTracer.calculateCircularity(path) * 100);
+            this.showToast(`Selected Shape (Circularity: ${circ}%)`);
+          }
+        }
+        this.render();
+      }
     }
   }
 
@@ -585,20 +646,20 @@ class DigiTracerApp {
       this.showToast('User test scan loaded (300 DPI calibrated)');
     };
     img.onerror = () => {
-      // Fallback to test_scan.png or procedural sample
+      // Fallback to Scan_20261010.png, test_scan.png or procedural sample
       const fallbackImg = new Image();
       fallbackImg.onload = () => {
         this.setImage(fallbackImg);
-        this.applyDPIScale(150);
+        this.applyDPIScale(300);
         this.fitToScreen();
         this.runAutoTrace();
       };
       fallbackImg.onerror = () => {
         this.loadSampleScan();
       };
-      fallbackImg.src = 'assets/test_scan.png';
+      fallbackImg.src = 'assets/Scan_20261010.png';
     };
-    img.src = 'assets/Scan_20261010.png';
+    img.src = 'assets/Scan_20261011.png';
   }
 
   applyDPIScale(dpi) {
@@ -757,23 +818,92 @@ class DigiTracerApp {
   }
 
   updateSimplifiedPaths() {
-    this.vectorPaths = this.rawContours.map(contour => {
+    this.vectorPaths = this.rawContours.map((contour) => {
       let simplified = ImageTracer.simplify(contour, this.simplifyTolerance);
       if (this.smoothSplines) {
         simplified = ImageTracer.smoothCurve(simplified);
       }
+
+      // Check if contour is near-circular and auto-circle is enabled
+      if (this.autoCircle) {
+        const circ = ImageTracer.calculateCircularity(contour);
+        if (circ >= this.minCircularity) {
+          const fitted = ImageTracer.fitCircle(contour);
+          if (fitted) return fitted;
+        }
+      }
+
+      simplified.originalPoints = contour;
       return simplified;
     });
 
     this.updateStats();
   }
 
+  convertAllNearCircularToCircles() {
+    let count = 0;
+    this.vectorPaths = this.vectorPaths.map(path => {
+      const orig = path.originalPoints || path;
+      const circ = ImageTracer.calculateCircularity(orig);
+      if (circ >= (this.minCircularity || 0.50)) {
+        const fitted = ImageTracer.fitCircle(orig);
+        if (fitted) {
+          count++;
+          return fitted;
+        }
+      }
+      return path;
+    });
+    this.updateStats();
+    this.render();
+    this.showToast(`Converted ${count} shape(s) to true CAD circles!`);
+  }
+
+  convertSelectedContourToCircle() {
+    if (this.selectedContourIndex < 0 || this.selectedContourIndex >= this.vectorPaths.length) {
+      this.showToast('Click a shape on the canvas first to select it', true);
+      return;
+    }
+    const path = this.vectorPaths[this.selectedContourIndex];
+    const orig = path.originalPoints || path;
+    const fitted = ImageTracer.fitCircle(orig);
+    if (fitted) {
+      this.vectorPaths[this.selectedContourIndex] = fitted;
+      this.updateStats();
+      this.render();
+      const diaMM = (fitted.diameter / (this.calibration.ppm || 1)).toFixed(1);
+      this.showToast(`Selected contour converted to circle (⌀${diaMM} mm)!`);
+    }
+  }
+
+  findContourAtPoint(pt) {
+    const thresholdPx = 25 / this.view.scale;
+    for (let i = 0; i < this.vectorPaths.length; i++) {
+      const path = this.vectorPaths[i];
+      if (path.isCircle) {
+        const dist = Math.hypot(pt.x - path.cx, pt.y - path.cy);
+        if (Math.abs(dist - path.radius) <= thresholdPx || dist <= path.radius) {
+          return i;
+        }
+      } else {
+        for (let j = 0; j < path.length; j++) {
+          if (Math.hypot(pt.x - path[j].x, pt.y - path[j].y) <= thresholdPx) {
+            return i;
+          }
+        }
+      }
+    }
+    return -1;
+  }
+
   updateStats() {
     let totalVerts = 0;
     let totalPerimeterPx = 0;
     let totalAreaPx = 0;
+    let circleCount = 0;
 
     this.vectorPaths.forEach(path => {
+      if (path.isCircle) circleCount++;
       totalVerts += path.length;
       totalPerimeterPx += ImageTracer.calculatePerimeter(path);
       totalAreaPx += Math.abs(ImageTracer.calculatePolygonArea(path));
@@ -783,7 +913,8 @@ class DigiTracerApp {
     const perimMM = (totalPerimeterPx / ppm).toFixed(1);
     const areaMM2 = (totalAreaPx / (ppm * ppm)).toFixed(1);
 
-    document.getElementById('statContourCount').textContent = this.vectorPaths.length;
+    const circleSuffix = circleCount > 0 ? ` (${circleCount} ⭕)` : '';
+    document.getElementById('statContourCount').textContent = `${this.vectorPaths.length}${circleSuffix}`;
     document.getElementById('statVertexCount').textContent = totalVerts;
     document.getElementById('statPerimeter').textContent = `${perimMM} ${this.calibration.unit}`;
     document.getElementById('statArea').textContent = `${areaMM2} ${this.calibration.unit}²`;
@@ -893,9 +1024,55 @@ class DigiTracerApp {
   renderVectors() {
     this.ctx.save();
     const lineWidth = 2 / this.view.scale;
+    const ppm = this.calibration.ppm || 1.0;
 
     this.vectorPaths.forEach((path, idx) => {
-      if (!path || path.length < 2) return;
+      if (!path) return;
+      const isSelected = this.selectedContourIndex === idx;
+
+      // Circle Shape Rendering with CAD Center Crosshair & Diameter Badge
+      if (path.isCircle) {
+        this.ctx.beginPath();
+        this.ctx.arc(path.cx, path.cy, path.radius, 0, Math.PI * 2);
+
+        this.ctx.strokeStyle = isSelected ? '#ec4899' : (idx === 0 ? '#00f0ff' : '#f59e0b');
+        this.ctx.lineWidth = isSelected ? lineWidth * 1.6 : lineWidth;
+        this.ctx.shadowColor = isSelected ? 'rgba(236, 72, 153, 0.8)' : (idx === 0 ? 'rgba(0, 240, 255, 0.5)' : 'rgba(245, 158, 11, 0.4)');
+        this.ctx.shadowBlur = isSelected ? 12 : 6;
+        this.ctx.stroke();
+
+        this.ctx.fillStyle = isSelected ? 'rgba(236, 72, 153, 0.1)' : 'rgba(0, 240, 255, 0.05)';
+        this.ctx.fill();
+
+        // CAD Center Crosshair
+        const crossSize = Math.max(6 / this.view.scale, Math.min(16 / this.view.scale, path.radius * 0.35));
+        this.ctx.strokeStyle = isSelected ? '#ec4899' : 'rgba(255, 255, 255, 0.6)';
+        this.ctx.lineWidth = 1 / this.view.scale;
+        this.ctx.beginPath();
+        this.ctx.moveTo(path.cx - crossSize, path.cy);
+        this.ctx.lineTo(path.cx + crossSize, path.cy);
+        this.ctx.moveTo(path.cx, path.cy - crossSize);
+        this.ctx.lineTo(path.cx, path.cy + crossSize);
+        this.ctx.stroke();
+
+        // Center dot
+        this.ctx.beginPath();
+        this.ctx.arc(path.cx, path.cy, 2 / this.view.scale, 0, Math.PI * 2);
+        this.ctx.fillStyle = isSelected ? '#ec4899' : '#00f0ff';
+        this.ctx.fill();
+
+        // Diameter Dimension Label (e.g. ⌀13.1 mm)
+        const diaMM = (path.diameter / ppm).toFixed(1);
+        const dimStr = `⌀${diaMM} ${this.calibration.unit}`;
+        const fontSize = Math.max(10, 12 / this.view.scale);
+        this.ctx.font = `600 ${fontSize}px var(--font-mono), monospace`;
+        this.ctx.fillStyle = isSelected ? '#ec4899' : '#f3f4f6';
+        this.ctx.fillText(dimStr, path.cx + path.radius + 6 / this.view.scale, path.cy + 4 / this.view.scale);
+
+        return;
+      }
+
+      if (path.length < 2) return;
 
       this.ctx.beginPath();
       this.ctx.moveTo(path[0].x, path[0].y);
@@ -904,20 +1081,20 @@ class DigiTracerApp {
       }
       this.ctx.closePath();
 
-      // Outer paths cyan, inner holes yellow
-      this.ctx.strokeStyle = idx === 0 ? '#00f0ff' : '#f59e0b';
-      this.ctx.lineWidth = lineWidth;
-      this.ctx.shadowColor = idx === 0 ? 'rgba(0, 240, 255, 0.5)' : 'rgba(245, 158, 11, 0.4)';
-      this.ctx.shadowBlur = 6;
+      // Outer paths cyan, inner holes yellow, selected pink
+      this.ctx.strokeStyle = isSelected ? '#ec4899' : (idx === 0 ? '#00f0ff' : '#f59e0b');
+      this.ctx.lineWidth = isSelected ? lineWidth * 1.6 : lineWidth;
+      this.ctx.shadowColor = isSelected ? 'rgba(236, 72, 153, 0.8)' : (idx === 0 ? 'rgba(0, 240, 255, 0.5)' : 'rgba(245, 158, 11, 0.4)');
+      this.ctx.shadowBlur = isSelected ? 12 : 6;
       this.ctx.stroke();
 
       // Subtle fill
-      this.ctx.fillStyle = idx === 0 ? 'rgba(0, 240, 255, 0.04)' : 'rgba(245, 158, 11, 0.04)';
+      this.ctx.fillStyle = isSelected ? 'rgba(236, 72, 153, 0.1)' : (idx === 0 ? 'rgba(0, 240, 255, 0.04)' : 'rgba(245, 158, 11, 0.04)');
       this.ctx.fill();
 
       // Render vertex nodes if enabled
       if (this.layers.points) {
-        this.ctx.fillStyle = '#ffffff';
+        this.ctx.fillStyle = isSelected ? '#ec4899' : '#ffffff';
         const nodeRadius = 3 / this.view.scale;
         path.forEach(pt => {
           this.ctx.beginPath();
@@ -1023,6 +1200,18 @@ class DigiTracerApp {
   getMillimeterPaths() {
     const ppm = this.calibration.ppm || 1.0;
     return this.vectorPaths.map(path => {
+      if (path.isCircle) {
+        const mmCircle = path.map(pt => ({
+          x: pt.x / ppm,
+          y: pt.y / ppm
+        }));
+        mmCircle.isCircle = true;
+        mmCircle.cx = path.cx / ppm;
+        mmCircle.cy = path.cy / ppm;
+        mmCircle.radius = path.radius / ppm;
+        mmCircle.diameter = path.diameter / ppm;
+        return mmCircle;
+      }
       return path.map(pt => ({
         x: pt.x / ppm,
         y: pt.y / ppm
@@ -1096,13 +1285,20 @@ class DigiTracerApp {
 
     let pathsMarkup = '';
     mmPaths.forEach((path, idx) => {
-      if (!path || path.length < 2) return;
+      if (!path) return;
+      const stroke = idx === 0 ? '#00f0ff' : '#f59e0b';
+
+      if (path.isCircle) {
+        pathsMarkup += `  <circle cx="${path.cx.toFixed(3)}" cy="${path.cy.toFixed(3)}" r="${path.radius.toFixed(3)}" fill="none" stroke="${stroke}" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
+        return;
+      }
+
+      if (path.length < 2) return;
       let d = `M ${path[0].x.toFixed(3)} ${path[0].y.toFixed(3)}`;
       for (let i = 1; i < path.length; i++) {
         d += ` L ${path[i].x.toFixed(3)} ${path[i].y.toFixed(3)}`;
       }
       d += ' Z';
-      const stroke = idx === 0 ? '#00f0ff' : '#f59e0b';
       pathsMarkup += `  <path d="${d}" fill="none" stroke="${stroke}" stroke-width="0.3" vector-effect="non-scaling-stroke" />\n`;
     });
 

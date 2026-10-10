@@ -236,6 +236,98 @@ const ImageTracer = {
   },
 
   /**
+   * Calculates shape circularity metric: 4 * PI * Area / (Perimeter^2)
+   * Perfect circle = 1.0. Square ~ 0.785. Hand-drawn circles ~ 0.65 - 0.95.
+   */
+  calculateCircularity(points) {
+    const area = Math.abs(this.calculatePolygonArea(points));
+    const perim = this.calculatePerimeter(points);
+    if (perim === 0) return 0;
+    return (4 * Math.PI * area) / (perim * perim);
+  },
+
+  /**
+   * Fits a least-squares circle to a set of contour points using Kåsa's algebraic method.
+   * Returns a complete Circle object with exact center, radius, and polygon vertices.
+   */
+  fitCircle(points, numSegments = 64) {
+    const n = points.length;
+    if (n < 3) return null;
+
+    let meanX = 0;
+    let meanY = 0;
+    for (let i = 0; i < n; i++) {
+      meanX += points[i].x;
+      meanY += points[i].y;
+    }
+    meanX /= n;
+    meanY /= n;
+
+    let Suu = 0, Suv = 0, Svv = 0;
+    let Suuu = 0, Suvv = 0, Svvv = 0, Svuu = 0;
+
+    for (let i = 0; i < n; i++) {
+      const u = points[i].x - meanX;
+      const v = points[i].y - meanY;
+      Suu += u * u;
+      Suv += u * v;
+      Svv += v * v;
+      Suuu += u * u * u;
+      Suvv += u * v * v;
+      Svvv += v * v * v;
+      Svuu += v * u * u;
+    }
+
+    const det = Suu * Svv - Suv * Suv;
+    let cx = meanX;
+    let cy = meanY;
+    let radius = 0;
+
+    if (Math.abs(det) > 1e-7) {
+      const rhs1 = 0.5 * (Suuu + Suvv);
+      const rhs2 = 0.5 * (Svvv + Svuu);
+      const cu = (rhs1 * Svv - rhs2 * Suv) / det;
+      const cv = (Suu * rhs2 - Suv * rhs1) / det;
+      cx = meanX + cu;
+      cy = meanY + cv;
+      radius = Math.sqrt(cu * cu + cv * cv + (Suu + Svv) / n);
+    } else {
+      // Fallback: mean center and average distance
+      cx = meanX;
+      cy = meanY;
+      let sumR = 0;
+      for (let i = 0; i < n; i++) {
+        sumR += Math.hypot(points[i].x - cx, points[i].y - cy);
+      }
+      radius = sumR / n;
+    }
+
+    // Generate circle polyline points
+    const circlePoints = [];
+    for (let i = 0; i < numSegments; i++) {
+      const angle = (i / numSegments) * Math.PI * 2;
+      circlePoints.push({
+        x: cx + Math.cos(angle) * radius,
+        y: cy + Math.sin(angle) * radius
+      });
+    }
+
+    const circularity = this.calculateCircularity(points);
+
+    // Create an Array-like path augmented with circle properties
+    const resultPath = [...circlePoints];
+    resultPath.isCircle = true;
+    resultPath.cx = cx;
+    resultPath.cy = cy;
+    resultPath.radius = radius;
+    resultPath.diameter = radius * 2;
+    resultPath.circularity = circularity;
+    resultPath.originalPoints = points;
+
+    return resultPath;
+  },
+
+  /**
    * Generates Catmull-Rom smooth spline points for organic outlines
    */
   smoothCurve(points, tension = 0.5, numSegments = 6) {

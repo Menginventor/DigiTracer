@@ -254,6 +254,40 @@
                 </label>
               </div>
 
+              <!-- Circle Recognition Card -->
+              <div class="action-card" style="margin-top: 14px;">
+                <div class="card-badge-title">
+                  <span class="mini-tag">⭕ Shape CAD</span>
+                  <strong>Convert Shapes to Circles</strong>
+                </div>
+                <p class="step-hint">Recognize circular contours or hand-drawn holes and convert them to true CAD circles with center marks and exact diameter.</p>
+
+                <div class="btn-group-row" style="margin-top: 10px;">
+                  <button id="btnFitAllCircles" class="btn btn-secondary btn-sm" title="Fit all near-circular shapes to true circles">
+                    ⭕ Auto-Fit Circles
+                  </button>
+                  <button id="btnConvertSelectedCircle" class="btn btn-outline btn-sm" title="Convert selected contour to circle">
+                    🎯 Convert Selected
+                  </button>
+                </div>
+
+                <div class="control-group" style="margin-top: 12px; margin-bottom: 8px;">
+                  <div class="label-row">
+                    <label for="sliderCircularity">Min Circularity Match</label>
+                    <span class="value-badge" id="valCircularity">60%</span>
+                  </div>
+                  <input type="range" id="sliderCircularity" min="40" max="95" step="5" value="60">
+                </div>
+
+                <div class="control-group toggle-group" style="margin-bottom: 0;">
+                  <label class="switch-label">
+                    <input type="checkbox" id="checkAutoCircle" checked>
+                    <span class="toggle-slider"></span>
+                    <span>Auto-detect circles on trace</span>
+                  </label>
+                </div>
+              </div>
+
               <div class="stats-card" id="traceStatsCard">
                 <h4>Geometry Statistics</h4>
                 <div class="info-row">
